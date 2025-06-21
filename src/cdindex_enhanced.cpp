@@ -404,12 +404,20 @@ std::shared_ptr<arrow::Table> EnhancedGraph::cdindex_batch(const std::shared_ptr
     auto schema = arrow::schema({arrow::field("paper_id", arrow::uint32()), arrow::field("cd5", arrow::float64())});
     if (n <= 0) return arrow::Table::Make(schema, std::vector<std::shared_ptr<arrow::Array>>{});
     std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
+    
+    // Reuse builders to reduce allocation overhead
+    arrow::UInt32Builder ib;
+    arrow::DoubleBuilder sb;
+    
     for (int64_t off = 0; off < n; off += CHUNK_SIZE()) {
         int64_t sz = std::min(CHUNK_SIZE(), n - off);
-        arrow::UInt32Builder ib;
-        arrow::DoubleBuilder sb;
+        
+        // Clear and reserve instead of creating new builders
+        ib.Reset();
+        sb.Reset();
         ib.Reserve(sz);
         sb.Reserve(sz);
+        
         #pragma omp parallel for if(sz > BATCH_PARALLEL_THRESHOLD()) schedule(dynamic)
         // WARNING: Arrow Builders (ib, sb) are not thread-safe; consider collecting local buffers then appending outside the parallel region
         for (int64_t i = 0; i < sz; ++i) {
@@ -453,12 +461,20 @@ std::shared_ptr<arrow::Table> EnhancedGraph::cdindex_filtered_batch(const std::s
         cache_order_.push_back(k);
     }
     std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
+    
+    // Reuse builders to reduce allocation overhead
+    arrow::UInt32Builder ib;
+    arrow::DoubleBuilder sb;
+    
     for (int64_t off = 0; off < n; off += CHUNK_SIZE()) {
         int64_t sz = std::min(CHUNK_SIZE(), n - off);
-        arrow::UInt32Builder ib;
-        arrow::DoubleBuilder sb;
+        
+        // Clear and reserve instead of creating new builders
+        ib.Reset();
+        sb.Reset();
         ib.Reserve(sz);
         sb.Reserve(sz);
+        
         #pragma omp parallel for if(sz > BATCH_PARALLEL_THRESHOLD()) schedule(dynamic)
         for (int64_t i = 0; i < sz; ++i) {
             VertexId fid = pids->Value(off + i);
