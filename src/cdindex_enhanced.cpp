@@ -5,6 +5,7 @@
 #include <absl/container/flat_hash_map.h>
 #include <omp.h>
 #include <mutex>
+#include <chrono>
 
 static int64_t get_env_int(const char* var, int64_t def) {
     if (auto e = std::getenv(var)) try { auto v = std::stoll(e); if (v > 0) return v; } catch(...) {}
@@ -15,6 +16,17 @@ int64_t INNER_PARALLEL_THRESHOLD() { return get_env_int("INNER_PARALLEL_THRESHOL
 int64_t MAX_CACHE_ENTRIES() { return get_env_int("MAX_CACHE_ENTRIES", 8); }
 int64_t CHUNK_SIZE() { return get_env_int("CHUNK_SIZE", 1000000); }
 int64_t get_ingest_chunk_size() { return get_env_int("INGEST_CHUNK_SIZE", 1000000); }
+
+// Timing utility for profiling
+class Timer {
+    std::chrono::high_resolution_clock::time_point start_;
+public:
+    Timer() : start_(std::chrono::high_resolution_clock::now()) {}
+    double elapsed_ms() const {
+        auto end = std::chrono::high_resolution_clock::now();
+        return std::chrono::duration<double, std::milli>(end - start_).count();
+    }
+};
 
 // Vertex methods
 Vertex::Vertex(VertexId id, timestamp_t time) : id(id), time(time) {}
@@ -366,24 +378,46 @@ double EnhancedGraph::cdindex_filtered(VertexId focal_id, time_delta_t t_delta, 
     Roaring combined;
     {
         std::lock_guard<std::mutex> l(filter_mutex_);
-        if (filter_bitmap_cache_.size() >= MAX_CACHE_ENTRIES()) { filter_bitmap_cache_.clear(); cache_order_.clear(); }
+        
+        // Build cache key
         std::ostringstream key;
-        bool init = false;
         for (auto& kv : filters) {
-            Roaring inc, exc;
-            for (int v : kv.second) {
-                if (v >= 0) inc |= properties.get_combined_bitmap(kv.first, {v});
-                else exc |= properties.get_combined_bitmap(kv.first, {-v});
-            }
-            Roaring pb = inc;
-            if (!exc.isEmpty()) pb -= exc;
-            combined = init ? (combined & pb) : pb;
-            init = true;
-            key << kv.first << ";";
+            key << kv.first << ":";
+            for (int v : kv.second) key << v << ",";
+            key << ";";
         }
-        std::string k = key.str();
-        filter_bitmap_cache_[k] = combined; // TODO: implement true LRU eviction instead of full clear to maintain useful cache entries
-        cache_order_.push_back(k);
+        std::string cache_key = key.str();
+        
+        // Check if already in cache
+        auto cache_it = filter_bitmap_cache_.find(cache_key);
+        if (cache_it != filter_bitmap_cache_.end()) {
+            // Cache hit: update LRU order and use cached result
+            update_cache_access(cache_key);
+            combined = cache_it->second;
+        } else {
+            // Cache miss: compute the filter bitmap
+            bool init = false;
+            for (auto& kv : filters) {
+                Roaring inc, exc;
+                for (int v : kv.second) {
+                    if (v >= 0) inc |= properties.get_combined_bitmap(kv.first, {v});
+                    else exc |= properties.get_combined_bitmap(kv.first, {-v});
+                }
+                Roaring pb = inc;
+                if (!exc.isEmpty()) pb -= exc;
+                combined = init ? (combined & pb) : pb;
+                init = true;
+            }
+            
+            // Evict LRU entries if cache is full
+            while (filter_bitmap_cache_.size() >= MAX_CACHE_ENTRIES()) {
+                evict_lru_cache_entry();
+            }
+            
+            // Add to cache and update LRU order
+            filter_bitmap_cache_[cache_key] = combined;
+            update_cache_access(cache_key);
+        }
     }
     auto citers = get_citers(focal_id, t_delta);
     Roaring citer_bm;
@@ -409,27 +443,52 @@ std::shared_ptr<arrow::Table> EnhancedGraph::cdindex_batch(const std::shared_ptr
     arrow::UInt32Builder ib;
     arrow::DoubleBuilder sb;
     
+    double total_compute_time = 0.0;
+    double total_arrow_time = 0.0;
+    
     for (int64_t off = 0; off < n; off += CHUNK_SIZE()) {
         int64_t sz = std::min(CHUNK_SIZE(), n - off);
         
-        // Clear and reserve instead of creating new builders
+        // OPTIMIZATION: Compute-then-build approach to eliminate builder thread-safety overhead
+        // Step 1: Compute all scores in parallel using local storage
+        std::vector<uint32_t> chunk_ids(sz);
+        std::vector<double> chunk_scores(sz);
+        
+        Timer compute_timer;
+        #pragma omp parallel for if(sz > BATCH_PARALLEL_THRESHOLD()) schedule(dynamic)
+        for (int64_t i = 0; i < sz; ++i) {
+            uint32_t pid = pids->Value(off + i);
+            chunk_ids[i] = pid;
+            chunk_scores[i] = cdindex(pid, dt);
+        }
+        total_compute_time += compute_timer.elapsed_ms();
+        
+        // Step 2: Build Arrow arrays sequentially (thread-safe)
+        Timer arrow_timer;
         ib.Reset();
         sb.Reset();
         ib.Reserve(sz);
         sb.Reserve(sz);
         
-        #pragma omp parallel for if(sz > BATCH_PARALLEL_THRESHOLD()) schedule(dynamic)
-        // WARNING: Arrow Builders (ib, sb) are not thread-safe; consider collecting local buffers then appending outside the parallel region
         for (int64_t i = 0; i < sz; ++i) {
-            uint32_t pid = pids->Value(off + i);
-            ib.Append(pid);
-            sb.Append(cdindex(pid, dt));
+            ib.Append(chunk_ids[i]);
+            sb.Append(chunk_scores[i]);
         }
+        
         std::shared_ptr<arrow::Array> ia, sa;
         ib.Finish(&ia);
         sb.Finish(&sa);
         batches.push_back(arrow::RecordBatch::Make(schema, sz, {ia, sa}));
+        total_arrow_time += arrow_timer.elapsed_ms();
     }
+    
+    // Log timing breakdown for performance analysis
+    if (std::getenv("CDINDEX_TIMING_DEBUG")) {
+        std::cerr << "BATCH TIMING - Compute: " << total_compute_time << "ms, Arrow: " 
+                  << total_arrow_time << "ms, Total: " << (total_compute_time + total_arrow_time) 
+                  << "ms, Papers: " << n << std::endl;
+    }
+    
     auto result = arrow::Table::FromRecordBatches(batches);
     return result.ValueOrDie();
 }
@@ -441,44 +500,71 @@ std::shared_ptr<arrow::Table> EnhancedGraph::cdindex_filtered_batch(const std::s
     Roaring combined;
     {
         std::lock_guard<std::mutex> l(filter_mutex_);
-        if (filter_bitmap_cache_.size() >= MAX_CACHE_ENTRIES()) { filter_bitmap_cache_.clear(); cache_order_.clear(); }
+        
+        // Build cache key
         std::ostringstream key;
-        bool init = false;
         for (auto& kv : filters) {
-            Roaring inc, exc;
-            for (int v : kv.second) {
-                if (v >= 0) inc |= properties.get_combined_bitmap(kv.first, {v});
-                else exc |= properties.get_combined_bitmap(kv.first, {-v});
-            }
-            Roaring pb = inc;
-            if (!exc.isEmpty()) pb -= exc;
-            combined = init ? (combined & pb) : pb;
-            init = true;
-            key << kv.first << ";";
+            key << kv.first << ":";
+            for (int v : kv.second) key << v << ",";
+            key << ";";
         }
-        std::string k = key.str();
-        filter_bitmap_cache_[k] = combined; // TODO: implement true LRU eviction instead of full clear to maintain useful cache entries
-        cache_order_.push_back(k);
+        std::string cache_key = key.str();
+        
+        // Check if already in cache
+        auto cache_it = filter_bitmap_cache_.find(cache_key);
+        if (cache_it != filter_bitmap_cache_.end()) {
+            // Cache hit: update LRU order and use cached result
+            update_cache_access(cache_key);
+            combined = cache_it->second;
+        } else {
+            // Cache miss: compute the filter bitmap
+            bool init = false;
+            for (auto& kv : filters) {
+                Roaring inc, exc;
+                for (int v : kv.second) {
+                    if (v >= 0) inc |= properties.get_combined_bitmap(kv.first, {v});
+                    else exc |= properties.get_combined_bitmap(kv.first, {-v});
+                }
+                Roaring pb = inc;
+                if (!exc.isEmpty()) pb -= exc;
+                combined = init ? (combined & pb) : pb;
+                init = true;
+            }
+            
+            // Evict LRU entries if cache is full
+            while (filter_bitmap_cache_.size() >= MAX_CACHE_ENTRIES()) {
+                evict_lru_cache_entry();
+            }
+            
+            // Add to cache and update LRU order
+            filter_bitmap_cache_[cache_key] = combined;
+            update_cache_access(cache_key);
+        }
     }
+    
     std::vector<std::shared_ptr<arrow::RecordBatch>> batches;
     
     // Reuse builders to reduce allocation overhead
     arrow::UInt32Builder ib;
     arrow::DoubleBuilder sb;
     
+    double total_compute_time = 0.0;
+    double total_arrow_time = 0.0;
+    
     for (int64_t off = 0; off < n; off += CHUNK_SIZE()) {
         int64_t sz = std::min(CHUNK_SIZE(), n - off);
         
-        // Clear and reserve instead of creating new builders
-        ib.Reset();
-        sb.Reset();
-        ib.Reserve(sz);
-        sb.Reserve(sz);
+        // OPTIMIZATION: Compute-then-build approach to eliminate builder thread-safety overhead
+        // Step 1: Compute all scores in parallel using local storage
+        std::vector<uint32_t> chunk_ids(sz);
+        std::vector<double> chunk_scores(sz);
         
+        Timer compute_timer;
         #pragma omp parallel for if(sz > BATCH_PARALLEL_THRESHOLD()) schedule(dynamic)
         for (int64_t i = 0; i < sz; ++i) {
             VertexId fid = pids->Value(off + i);
-            ib.Append(fid);
+            chunk_ids[i] = fid;
+            
             auto citers = get_citers(fid, dt);
             Roaring citer_bm;
             for (auto* c : citers) citer_bm.add(c->id);
@@ -490,18 +576,142 @@ std::shared_ptr<arrow::Table> EnhancedGraph::cdindex_filtered_batch(const std::s
                 auto it = vertices_.find(id);
                 if (it != vertices_.end()) filt.push_back(it->second);
             }
-            sb.Append(compute_cdindex_logic(fid, filt, dt));
+            chunk_scores[i] = compute_cdindex_logic(fid, filt, dt);
         }
+        total_compute_time += compute_timer.elapsed_ms();
+        
+        // Step 2: Build Arrow arrays sequentially (thread-safe)
+        Timer arrow_timer;
+        ib.Reset();
+        sb.Reset();
+        ib.Reserve(sz);
+        sb.Reserve(sz);
+        
+        for (int64_t i = 0; i < sz; ++i) {
+            ib.Append(chunk_ids[i]);
+            sb.Append(chunk_scores[i]);
+        }
+        
         std::shared_ptr<arrow::Array> ia, sa;
         ib.Finish(&ia);
         sb.Finish(&sa);
         batches.push_back(arrow::RecordBatch::Make(schema, sz, {ia, sa}));
+        total_arrow_time += arrow_timer.elapsed_ms();
     }
+    
+    // Log timing breakdown for performance analysis
+    if (std::getenv("CDINDEX_TIMING_DEBUG")) {
+        std::cerr << "FILTERED BATCH TIMING - Compute: " << total_compute_time << "ms, Arrow: " 
+                  << total_arrow_time << "ms, Total: " << (total_compute_time + total_arrow_time) 
+                  << "ms, Papers: " << n << std::endl;
+    }
+    
     auto result = arrow::Table::FromRecordBatches(batches);
     return result.ValueOrDie();
 }
+void EnhancedGraph::evict_lru_cache_entry() {
+    // Remove the least recently used entry (back of the list)
+    if (!cache_lru_order_.empty()) {
+        std::string lru_key = cache_lru_order_.back();
+        cache_lru_order_.pop_back();
+        cache_lru_map_.erase(lru_key);
+        filter_bitmap_cache_.erase(lru_key);
+    }
+}
+
+void EnhancedGraph::update_cache_access(const std::string& key) {
+    auto it = cache_lru_map_.find(key);
+    if (it != cache_lru_map_.end()) {
+        // Move to front (most recently used)
+        cache_lru_order_.erase(it->second);
+    }
+    cache_lru_order_.push_front(key);
+    cache_lru_map_[key] = cache_lru_order_.begin();
+}
+
 void EnhancedGraph::clear_filter_cache() {
     std::lock_guard<std::mutex> l(filter_mutex_);
     filter_bitmap_cache_.clear();
-    cache_order_.clear();
+    cache_lru_order_.clear();
+    cache_lru_map_.clear();
+}
+Roaring PropertyStore::evaluate_filter_expression(const FilterExpression& expr) const {
+    switch (expr.op) {
+        case FilterOp::EQUALS:
+            return get_combined_bitmap(expr.attribute, {expr.values[0]});
+            
+        case FilterOp::IN:
+            return get_combined_bitmap(expr.attribute, expr.values);
+            
+        case FilterOp::AND: {
+            Roaring result;
+            bool first = true;
+            for (const auto& child : expr.children) {
+                Roaring child_result = evaluate_filter_expression(*child);
+                if (first) {
+                    result = child_result;
+                    first = false;
+                } else {
+                    result &= child_result;
+                }
+            }
+            return result;
+        }
+        
+        case FilterOp::OR: {
+            Roaring result;
+            for (const auto& child : expr.children) {
+                result |= evaluate_filter_expression(*child);
+            }
+            return result;
+        }
+        
+        case FilterOp::NOT: {
+            if (expr.children.size() != 1) {
+                throw std::runtime_error("NOT filter must have exactly one child");
+            }
+            Roaring child_result = evaluate_filter_expression(*expr.children[0]);
+            // For NOT, we need to negate against all possible values
+            // This is a simplified implementation - in practice you'd want to maintain
+            // a universe bitmap or handle this more efficiently
+            Roaring universe;
+            // Add all paper IDs to universe (this could be optimized)
+            for (const auto& [prop_name, prop_bitmaps] : categorical_bitmaps_) {
+                for (const auto& [val, bitmap] : prop_bitmaps) {
+                    universe |= bitmap;
+                }
+            }
+            return universe - child_result;
+        }
+        
+        default:
+            throw std::runtime_error("Unknown filter operation");
+    }
+}
+
+// Helper functions for building filter expressions
+std::unique_ptr<FilterExpression> make_filter_and(std::vector<std::unique_ptr<FilterExpression>> children) {
+    auto expr = std::make_unique<FilterExpression>(FilterOp::AND);
+    expr->children = std::move(children);
+    return expr;
+}
+
+std::unique_ptr<FilterExpression> make_filter_or(std::vector<std::unique_ptr<FilterExpression>> children) {
+    auto expr = std::make_unique<FilterExpression>(FilterOp::OR);
+    expr->children = std::move(children);
+    return expr;
+}
+
+std::unique_ptr<FilterExpression> make_filter_not(std::unique_ptr<FilterExpression> child) {
+    auto expr = std::make_unique<FilterExpression>(FilterOp::NOT);
+    expr->children.push_back(std::move(child));
+    return expr;
+}
+
+std::unique_ptr<FilterExpression> make_filter_in(const std::string& attribute, const std::vector<int>& values) {
+    return std::make_unique<FilterExpression>(FilterOp::IN, attribute, values);
+}
+
+std::unique_ptr<FilterExpression> make_filter_equals(const std::string& attribute, int value) {
+    return std::make_unique<FilterExpression>(FilterOp::EQUALS, attribute, std::vector<int>{value});
 }

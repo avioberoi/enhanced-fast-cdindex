@@ -61,7 +61,9 @@ PYBIND11_MODULE(_cdindex, m) {
             auto maybe_table = arrow::py::unwrap_table(pobj);
             if (!maybe_table.ok()) throw std::runtime_error(maybe_table.status().message());
             self.add_edges_from_arrow(*maybe_table);
-        });
+        })
+        .def("vertex_count", &EnhancedGraph::vertex_count)
+        .def("edge_count", &EnhancedGraph::edge_count);
 
     // Remove iindex and mcdindex for now since they're not in the enhanced graph
 }

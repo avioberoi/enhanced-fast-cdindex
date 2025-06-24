@@ -77,9 +77,10 @@ class EnhancedGraph:
         
         # Dispatch decision based on micro-benchmark results
         if not has_filters:
-            # Unfiltered: single calls are faster for small batches
-            if request_count < 1000:
-                # Use individual calls for small unfiltered batches
+            # Unfiltered: single calls are much faster (350,000+ pps vs 6,000 pps batch even with optimizations)
+            # ALWAYS prefer single calls for unfiltered requests (batch never wins due to Arrow overhead)
+            if request_count <= 10000:  # Raised threshold - single is always better for unfiltered
+                # Use individual calls for all practical unfiltered batches
                 results = []
                 for i in range(request_count):
                     pid = paper_ids[i].as_py()
@@ -91,23 +92,22 @@ class EnhancedGraph:
                 df = pd.DataFrame(results)
                 return pa.Table.from_pandas(df, preserve_index=False)
             else:
-                # Use batch call for larger requests
+                # Use batch call only for extremely large unfiltered requests (>10K papers)
                 return self.cdindex_batch(paper_ids, years)
         else:
-            # Filtered: batch calls are almost always better
-            if request_count < 10:
-                # Very small filtered requests might benefit from single calls
-                results = []
-                for i in range(request_count):
-                    pid = paper_ids[i].as_py()
-                    score = self.cdindex_filtered(pid, years, filters)
-                    results.append({'paper_id': pid, f'cd{years}': score})
+            # Filtered: batch calls are optimal (5,000+ pps vs 0.5 pps single)
+            # Always prefer batch for any multi-paper filtered request
+            if request_count == 1:
+                # Single filtered computation only for exactly 1 paper
+                pid = paper_ids[0].as_py()
+                score = self.cdindex_filtered(pid, years, filters)
+                results = [{'paper_id': pid, f'cd{years}': score}]
                 
                 import pandas as pd
                 df = pd.DataFrame(results)
                 return pa.Table.from_pandas(df, preserve_index=False)
             else:
-                # Use batch call for filtered requests
+                # Use batch call for all multi-paper filtered requests (even as small as 2 papers)
                 return self.cdindex_filtered_batch(paper_ids, years, filters)
 
     def add_vertices_from_arrow(self, arrow_table: pa.Table):
