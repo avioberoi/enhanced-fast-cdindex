@@ -1,0 +1,34 @@
+{
+  "data": {
+    "micro_vertices": 1000000,
+    "micro_benchmark_papers": 10000,
+    "wos_data_dir": "../WoS_data",
+    "cache_dir": "./data_cache"
+  },
+  "performance": {
+    "time_windows": [
+      3,
+      5,
+      10
+    ],
+    "batch_sizes": [
+      100,
+      1000,
+      5000,
+      10000
+    ],
+    "single_sample_sizes": [
+      100,
+      500,
+      1000
+    ],
+    "max_workers": 8
+  },
+  "output": {
+    "results_dir": "./benchmark_results",
+    "plots_dir": "./benchmark_plots",
+    "logs_dir": "./benchmark_logs",
+    "log_level": "INFO",
+    "generate_html_report": true
+  }
+}

@@ -1,0 +1,26 @@
+# Enhanced CD-Index Benchmarking Suite - .gitignore
+
+# Runtime directories
+benchmark_results/
+benchmark_plots/
+benchmark_logs/
+slurm/
+__pycache__/
+
+# Data cache (using external cache)
+data_cache/
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+.DS_Store
+
+# IDE files
+.vscode/
+.idea/
+
+# Python cache
+*.pyc
+*.pyo
