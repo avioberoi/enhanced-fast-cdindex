@@ -1,0 +1,784 @@
+{
+  "metadata": {
+    "vertex_count": 12000000,
+    "edge_count": 26803170,
+    "benchmark_papers": 10000,
+    "timestamp": 1750802233.983245
+  },
+  "benchmarks": {
+    "time_window_3": {
+      "single": {
+        "size_50": {
+          "duration": 8.804351091384888e-05,
+          "throughput": 567901.0239485487,
+          "sample_size": 50,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "scores_sample": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "size_100": {
+          "duration": 0.0003253668546676636,
+          "throughput": 307345.3812686055,
+          "sample_size": 100,
+          "memory_mb": 0.02734375,
+          "cpu_percent": 0.0,
+          "scores_sample": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "size_200": {
+          "duration": 0.0005800500512123108,
+          "throughput": 344797.831811234,
+          "sample_size": 200,
+          "memory_mb": 0.015625,
+          "cpu_percent": 0.0,
+          "scores_sample": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "batch": {
+        "size_100": {
+          "duration": 3.385979026556015,
+          "throughput": 29.533555646891624,
+          "batch_size": 100,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 100,
+          "result_columns": 2
+        },
+        "size_500": {
+          "duration": 1.993228554725647,
+          "throughput": 250.84930617443482,
+          "batch_size": 500,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 500,
+          "result_columns": 2
+        },
+        "size_1000": {
+          "duration": 1.9249959290027618,
+          "throughput": 519.4816180821987,
+          "batch_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000,
+          "result_columns": 2
+        },
+        "size_5000": {
+          "duration": 1.992976687848568,
+          "throughput": 2508.8100781537664,
+          "batch_size": 5000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 5000,
+          "result_columns": 2
+        }
+      },
+      "filtered": {
+        "filter_1": {
+          "duration": 1.925627164542675,
+          "throughput": 519.3113279732394,
+          "filter_config": {},
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "filter_2": {
+          "duration": 1.9490948989987373,
+          "throughput": 513.0586512302231,
+          "filter_config": {
+            "year": [
+              2000,
+              2001,
+              2002,
+              2003,
+              2004,
+              2005,
+              2006,
+              2007,
+              2008,
+              2009
+            ]
+          },
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "filter_3": {
+          "duration": 1.93069526553154,
+          "throughput": 517.9481287662918,
+          "filter_config": {
+            "year": [
+              2010,
+              2011,
+              2012,
+              2013,
+              2014,
+              2015,
+              2016,
+              2017,
+              2018,
+              2019
+            ]
+          },
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "filter_4": {
+          "duration": 1.9265867322683334,
+          "throughput": 519.0526765553999,
+          "filter_config": {
+            "year": [
+              1990,
+              1991,
+              1992,
+              1993,
+              1994,
+              1995,
+              1996,
+              1997,
+              1998,
+              1999
+            ]
+          },
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "filter_5": {
+          "duration": 1.930004082620144,
+          "throughput": 518.1336189933937,
+          "filter_config": {
+            "year": [
+              2015,
+              2016,
+              2017,
+              2018,
+              2019,
+              2020
+            ]
+          },
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        }
+      },
+      "smart_dispatch": {
+        "size_100_unfiltered": {
+          "duration": 1.9198149740695953,
+          "throughput": 52.08835296665151,
+          "size": 100,
+          "filter_config": {},
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 100
+        },
+        "size_1000_unfiltered": {
+          "duration": 1.9194250330328941,
+          "throughput": 520.9893498262313,
+          "size": 1000,
+          "filter_config": {},
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "size_100_filtered": {
+          "duration": 1.9187118336558342,
+          "throughput": 52.118300542017366,
+          "size": 100,
+          "filter_config": {
+            "year": [
+              2000,
+              2001,
+              2002,
+              2003,
+              2004,
+              2005,
+              2006,
+              2007,
+              2008,
+              2009
+            ]
+          },
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 100
+        },
+        "size_1000_filtered": {
+          "duration": 1.9264346659183502,
+          "throughput": 519.0936488486051,
+          "size": 1000,
+          "filter_config": {
+            "year": [
+              2000,
+              2001,
+              2002,
+              2003,
+              2004,
+              2005,
+              2006,
+              2007,
+              2008,
+              2009
+            ]
+          },
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        }
+      }
+    },
+    "time_window_5": {
+      "single": {
+        "size_50": {
+          "duration": 6.866455078125e-05,
+          "throughput": 728177.7777777778,
+          "sample_size": 50,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "scores_sample": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "size_100": {
+          "duration": 0.0002444908022880554,
+          "throughput": 409013.34145969833,
+          "sample_size": 100,
+          "memory_mb": 0.0,
+          "cpu_percent": 0.0,
+          "scores_sample": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "size_200": {
+          "duration": 0.0004205778241157532,
+          "throughput": 475536.2468777126,
+          "sample_size": 200,
+          "memory_mb": 0.0,
+          "cpu_percent": 0.0,
+          "scores_sample": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "batch": {
+        "size_100": {
+          "duration": 1.9168950319290161,
+          "throughput": 52.16769741396203,
+          "batch_size": 100,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 100,
+          "result_columns": 2
+        },
+        "size_500": {
+          "duration": 1.9792930111289024,
+          "throughput": 252.61545268369426,
+          "batch_size": 500,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 500,
+          "result_columns": 2
+        },
+        "size_1000": {
+          "duration": 1.9863978400826454,
+          "throughput": 503.42382569163203,
+          "batch_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000,
+          "result_columns": 2
+        },
+        "size_5000": {
+          "duration": 1.929878905415535,
+          "throughput": 2590.8361327590223,
+          "batch_size": 5000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 5000,
+          "result_columns": 2
+        }
+      },
+      "filtered": {
+        "filter_1": {
+          "duration": 1.9825128018856049,
+          "throughput": 504.41036196532065,
+          "filter_config": {},
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "filter_2": {
+          "duration": 1.9946047738194466,
+          "throughput": 501.35245494530284,
+          "filter_config": {
+            "year": [
+              2000,
+              2001,
+              2002,
+              2003,
+              2004,
+              2005,
+              2006,
+              2007,
+              2008,
+              2009
+            ]
+          },
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "filter_3": {
+          "duration": 1.9865736737847328,
+          "throughput": 503.3792671252126,
+          "filter_config": {
+            "year": [
+              2010,
+              2011,
+              2012,
+              2013,
+              2014,
+              2015,
+              2016,
+              2017,
+              2018,
+              2019
+            ]
+          },
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "filter_4": {
+          "duration": 1.914712630212307,
+          "throughput": 522.2715848952843,
+          "filter_config": {
+            "year": [
+              1990,
+              1991,
+              1992,
+              1993,
+              1994,
+              1995,
+              1996,
+              1997,
+              1998,
+              1999
+            ]
+          },
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "filter_5": {
+          "duration": 1.988228939473629,
+          "throughput": 502.96018740414456,
+          "filter_config": {
+            "year": [
+              2015,
+              2016,
+              2017,
+              2018,
+              2019,
+              2020
+            ]
+          },
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        }
+      },
+      "smart_dispatch": {
+        "size_100_unfiltered": {
+          "duration": 1.9889985248446465,
+          "throughput": 50.27655815270685,
+          "size": 100,
+          "filter_config": {},
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 100
+        },
+        "size_1000_unfiltered": {
+          "duration": 1.9925877526402473,
+          "throughput": 501.85995506344227,
+          "size": 1000,
+          "filter_config": {},
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "size_100_filtered": {
+          "duration": 1.9223168045282364,
+          "throughput": 52.02056173282083,
+          "size": 100,
+          "filter_config": {
+            "year": [
+              2000,
+              2001,
+              2002,
+              2003,
+              2004,
+              2005,
+              2006,
+              2007,
+              2008,
+              2009
+            ]
+          },
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 100
+        },
+        "size_1000_filtered": {
+          "duration": 1.9464073330163956,
+          "throughput": 513.7670738479367,
+          "size": 1000,
+          "filter_config": {
+            "year": [
+              2000,
+              2001,
+              2002,
+              2003,
+              2004,
+              2005,
+              2006,
+              2007,
+              2008,
+              2009
+            ]
+          },
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        }
+      }
+    },
+    "time_window_10": {
+      "single": {
+        "size_50": {
+          "duration": 5.95971941947937e-05,
+          "throughput": 838965.6707088386,
+          "sample_size": 50,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "scores_sample": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "size_100": {
+          "duration": 0.0004317536950111389,
+          "throughput": 231613.5360403113,
+          "sample_size": 100,
+          "memory_mb": 0.0,
+          "cpu_percent": 0.0,
+          "scores_sample": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "size_200": {
+          "duration": 0.0009243860840797424,
+          "throughput": 216359.81268487696,
+          "sample_size": 200,
+          "memory_mb": 0.0,
+          "cpu_percent": 689.55,
+          "scores_sample": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "batch": {
+        "size_100": {
+          "duration": 1.924510307610035,
+          "throughput": 51.96127014990407,
+          "batch_size": 100,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 100,
+          "result_columns": 2
+        },
+        "size_500": {
+          "duration": 1.9233692958950996,
+          "throughput": 259.960477203786,
+          "batch_size": 500,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 500,
+          "result_columns": 2
+        },
+        "size_1000": {
+          "duration": 1.9239892214536667,
+          "throughput": 519.7534314898353,
+          "batch_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000,
+          "result_columns": 2
+        },
+        "size_5000": {
+          "duration": 1.956712357699871,
+          "throughput": 2555.3065990126083,
+          "batch_size": 5000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 5000,
+          "result_columns": 2
+        }
+      },
+      "filtered": {
+        "filter_1": {
+          "duration": 1.9875890612602234,
+          "throughput": 503.1221088356935,
+          "filter_config": {},
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "filter_2": {
+          "duration": 1.928867295384407,
+          "throughput": 518.4389835386309,
+          "filter_config": {
+            "year": [
+              2000,
+              2001,
+              2002,
+              2003,
+              2004,
+              2005,
+              2006,
+              2007,
+              2008,
+              2009
+            ]
+          },
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "filter_3": {
+          "duration": 1.9870952293276787,
+          "throughput": 503.2471444956082,
+          "filter_config": {
+            "year": [
+              2010,
+              2011,
+              2012,
+              2013,
+              2014,
+              2015,
+              2016,
+              2017,
+              2018,
+              2019
+            ]
+          },
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "filter_4": {
+          "duration": 1.9209716990590096,
+          "throughput": 520.569876427566,
+          "filter_config": {
+            "year": [
+              1990,
+              1991,
+              1992,
+              1993,
+              1994,
+              1995,
+              1996,
+              1997,
+              1998,
+              1999
+            ]
+          },
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "filter_5": {
+          "duration": 1.9764760360121727,
+          "throughput": 505.9509863917425,
+          "filter_config": {
+            "year": [
+              2015,
+              2016,
+              2017,
+              2018,
+              2019,
+              2020
+            ]
+          },
+          "test_size": 1000,
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        }
+      },
+      "smart_dispatch": {
+        "size_100_unfiltered": {
+          "duration": 1.919417954981327,
+          "throughput": 52.099127102816354,
+          "size": 100,
+          "filter_config": {},
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 100
+        },
+        "size_1000_unfiltered": {
+          "duration": 1.9977018013596535,
+          "throughput": 500.57521063423536,
+          "size": 1000,
+          "filter_config": {},
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        },
+        "size_100_filtered": {
+          "duration": 1.9856158718466759,
+          "throughput": 50.36220822862245,
+          "size": 100,
+          "filter_config": {
+            "year": [
+              2000,
+              2001,
+              2002,
+              2003,
+              2004,
+              2005,
+              2006,
+              2007,
+              2008,
+              2009
+            ]
+          },
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 100
+        },
+        "size_1000_filtered": {
+          "duration": 1.925431214272976,
+          "throughput": 519.3641780537927,
+          "size": 1000,
+          "filter_config": {
+            "year": [
+              2000,
+              2001,
+              2002,
+              2003,
+              2004,
+              2005,
+              2006,
+              2007,
+              2008,
+              2009
+            ]
+          },
+          "memory_mb": 0.0,
+          "cpu_percent": 0,
+          "result_rows": 1000
+        }
+      }
+    }
+  }
+}

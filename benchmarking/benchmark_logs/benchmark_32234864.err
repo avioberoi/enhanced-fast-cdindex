@@ -1,0 +1,122 @@
+2025-06-24 16:56:16,114 - __main__ - INFO - Enhanced CD-Index Benchmark Suite
+2025-06-24 16:56:16,114 - __main__ - INFO - ============================================================
+2025-06-24 16:56:16,114 - __main__ - INFO - Validating environment...
+2025-06-24 16:56:16,114 - __main__ - INFO - Validating configuration...
+2025-06-24 16:56:16,114 - __main__ - INFO - Initializing benchmark runner...
+2025-06-24 16:56:16,115 - __main__ - INFO - Running micro benchmarks...
+2025-06-24 16:56:16,115 - benchmark_runner - INFO - Starting micro-benchmark suite...
+2025-06-24 16:56:16,115 - data_loader - INFO - Loading existing micro dataset...
+2025-06-24 16:56:17,572 - data_loader - INFO - Creating EnhancedGraph...
+2025-06-24 16:56:17,572 - data_loader - INFO - Ingesting vertices...
+2025-06-24 16:56:30,500 - data_loader - INFO - Ingesting edges...
+2025-06-24 16:57:12,815 - data_loader - INFO - Ingesting properties and building indexes...
+PropertyStore::ingest_arrow: table rows=12000000, columns=2, chunk_size=100000
+PropertyStore::ingest_arrow: columns schema: paper_id(int32) year(int32) 
+PropertyStore::ingest_arrow: completed, loaded 12000000 property entries across 1 columns.
+2025-06-24 16:57:13,982 - data_loader - INFO - EnhancedGraph ready: 12,000,000 vertices, 26,803,170 edges
+2025-06-24 16:57:13,985 - benchmark_runner - INFO - Testing time window: 3 years
+2025-06-24 16:57:13,985 - benchmark_runner - INFO - Running single computation benchmarks...
+2025-06-24 16:57:13,986 - benchmark_runner - INFO -   Size 50: 0.000s, 567901.0 papers/sec
+2025-06-24 16:57:13,987 - benchmark_runner - INFO -   Size 100: 0.000s, 307345.4 papers/sec
+2025-06-24 16:57:13,987 - benchmark_runner - INFO -   Size 200: 0.001s, 344797.8 papers/sec
+2025-06-24 16:57:13,987 - benchmark_runner - INFO - Running batch computation benchmarks...
+BATCH TIMING - Compute: 0.086172ms, Arrow: 0.053614ms, Total: 0.139786ms, Papers: 100
+2025-06-24 16:57:17,374 - benchmark_runner - INFO -   Batch 100: 3.386s, 29.5 papers/sec
+BATCH TIMING - Compute: 0.674078ms, Arrow: 0.03392ms, Total: 0.707998ms, Papers: 500
+2025-06-24 16:57:19,367 - benchmark_runner - INFO -   Batch 500: 1.993s, 250.8 papers/sec
+BATCH TIMING - Compute: 1.31145ms, Arrow: 0.038382ms, Total: 1.34983ms, Papers: 1000
+2025-06-24 16:57:21,293 - benchmark_runner - INFO -   Batch 1000: 1.925s, 519.5 papers/sec
+BATCH TIMING - Compute: 7.64504ms, Arrow: 0.06894ms, Total: 7.71398ms, Papers: 5000
+2025-06-24 16:57:23,287 - benchmark_runner - INFO -   Batch 5000: 1.993s, 2508.8 papers/sec
+2025-06-24 16:57:23,287 - benchmark_runner - INFO - Running filtered computation benchmarks...
+BATCH TIMING - Compute: 1.28873ms, Arrow: 0.024086ms, Total: 1.31282ms, Papers: 1000
+2025-06-24 16:57:25,213 - benchmark_runner - INFO -   unfiltered: 1.926s, 519.3 papers/sec
+FILTERED BATCH TIMING - Compute: 1.43482ms, Arrow: 0.02826ms, Total: 1.46308ms, Papers: 1000
+2025-06-24 16:57:27,162 - benchmark_runner - INFO -   {'year': [2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009]}: 1.949s, 513.1 papers/sec
+FILTERED BATCH TIMING - Compute: 1.03328ms, Arrow: 0.029979ms, Total: 1.06326ms, Papers: 1000
+2025-06-24 16:57:29,094 - benchmark_runner - INFO -   {'year': [2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019]}: 1.931s, 517.9 papers/sec
+FILTERED BATCH TIMING - Compute: 1.40726ms, Arrow: 0.032605ms, Total: 1.43986ms, Papers: 1000
+2025-06-24 16:57:31,021 - benchmark_runner - INFO -   {'year': [1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999]}: 1.927s, 519.1 papers/sec
+FILTERED BATCH TIMING - Compute: 0.852405ms, Arrow: 0.029264ms, Total: 0.881669ms, Papers: 1000
+2025-06-24 16:57:32,951 - benchmark_runner - INFO -   {'year': [2015, 2016, 2017, 2018, 2019, 2020]}: 1.930s, 518.1 papers/sec
+2025-06-24 16:57:32,951 - benchmark_runner - INFO - Running smart dispatch benchmarks...
+BATCH TIMING - Compute: 0.085323ms, Arrow: 0.019671ms, Total: 0.104994ms, Papers: 100
+2025-06-24 16:57:34,871 - benchmark_runner - INFO -   size_100_unfiltered: 1.920s, 52.1 papers/sec
+BATCH TIMING - Compute: 1.32487ms, Arrow: 0.025843ms, Total: 1.35071ms, Papers: 1000
+2025-06-24 16:57:36,792 - benchmark_runner - INFO -   size_1000_unfiltered: 1.919s, 521.0 papers/sec
+FILTERED BATCH TIMING - Compute: 0.104326ms, Arrow: 0.020547ms, Total: 0.124873ms, Papers: 100
+2025-06-24 16:57:38,711 - benchmark_runner - INFO -   size_100_filtered: 1.919s, 52.1 papers/sec
+FILTERED BATCH TIMING - Compute: 1.43293ms, Arrow: 0.044257ms, Total: 1.47718ms, Papers: 1000
+2025-06-24 16:57:40,639 - benchmark_runner - INFO -   size_1000_filtered: 1.926s, 519.1 papers/sec
+2025-06-24 16:57:40,639 - benchmark_runner - INFO - Testing time window: 5 years
+2025-06-24 16:57:40,639 - benchmark_runner - INFO - Running single computation benchmarks...
+2025-06-24 16:57:40,639 - benchmark_runner - INFO -   Size 50: 0.000s, 728177.8 papers/sec
+2025-06-24 16:57:40,640 - benchmark_runner - INFO -   Size 100: 0.000s, 409013.3 papers/sec
+2025-06-24 16:57:40,640 - benchmark_runner - INFO -   Size 200: 0.000s, 475536.2 papers/sec
+2025-06-24 16:57:40,640 - benchmark_runner - INFO - Running batch computation benchmarks...
+BATCH TIMING - Compute: 0.125444ms, Arrow: 0.034028ms, Total: 0.159472ms, Papers: 100
+2025-06-24 16:57:42,557 - benchmark_runner - INFO -   Batch 100: 1.917s, 52.2 papers/sec
+BATCH TIMING - Compute: 1.1051ms, Arrow: 0.022192ms, Total: 1.12729ms, Papers: 500
+2025-06-24 16:57:44,537 - benchmark_runner - INFO -   Batch 500: 1.979s, 252.6 papers/sec
+BATCH TIMING - Compute: 2.26907ms, Arrow: 0.033394ms, Total: 2.30247ms, Papers: 1000
+2025-06-24 16:57:46,524 - benchmark_runner - INFO -   Batch 1000: 1.986s, 503.4 papers/sec
+BATCH TIMING - Compute: 14.2611ms, Arrow: 0.107049ms, Total: 14.3682ms, Papers: 5000
+2025-06-24 16:57:48,456 - benchmark_runner - INFO -   Batch 5000: 1.930s, 2590.8 papers/sec
+2025-06-24 16:57:48,456 - benchmark_runner - INFO - Running filtered computation benchmarks...
+BATCH TIMING - Compute: 2.21681ms, Arrow: 0.026652ms, Total: 2.24346ms, Papers: 1000
+2025-06-24 16:57:50,439 - benchmark_runner - INFO -   unfiltered: 1.983s, 504.4 papers/sec
+FILTERED BATCH TIMING - Compute: 2.38139ms, Arrow: 0.03695ms, Total: 2.41834ms, Papers: 1000
+2025-06-24 16:57:52,434 - benchmark_runner - INFO -   {'year': [2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009]}: 1.995s, 501.4 papers/sec
+FILTERED BATCH TIMING - Compute: 0.921966ms, Arrow: 0.029475ms, Total: 0.951441ms, Papers: 1000
+2025-06-24 16:57:54,421 - benchmark_runner - INFO -   {'year': [2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019]}: 1.987s, 503.4 papers/sec
+FILTERED BATCH TIMING - Compute: 1.33466ms, Arrow: 0.02849ms, Total: 1.36315ms, Papers: 1000
+2025-06-24 16:57:56,336 - benchmark_runner - INFO -   {'year': [1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999]}: 1.915s, 522.3 papers/sec
+FILTERED BATCH TIMING - Compute: 0.915406ms, Arrow: 0.027249ms, Total: 0.942655ms, Papers: 1000
+2025-06-24 16:57:58,325 - benchmark_runner - INFO -   {'year': [2015, 2016, 2017, 2018, 2019, 2020]}: 1.988s, 503.0 papers/sec
+2025-06-24 16:57:58,325 - benchmark_runner - INFO - Running smart dispatch benchmarks...
+BATCH TIMING - Compute: 0.130292ms, Arrow: 0.020094ms, Total: 0.150386ms, Papers: 100
+2025-06-24 16:58:00,314 - benchmark_runner - INFO -   size_100_unfiltered: 1.989s, 50.3 papers/sec
+BATCH TIMING - Compute: 2.21608ms, Arrow: 0.025314ms, Total: 2.24139ms, Papers: 1000
+2025-06-24 16:58:02,307 - benchmark_runner - INFO -   size_1000_unfiltered: 1.993s, 501.9 papers/sec
+FILTERED BATCH TIMING - Compute: 0.152068ms, Arrow: 0.021384ms, Total: 0.173452ms, Papers: 100
+2025-06-24 16:58:04,230 - benchmark_runner - INFO -   size_100_filtered: 1.922s, 52.0 papers/sec
+FILTERED BATCH TIMING - Compute: 2.61423ms, Arrow: 0.028712ms, Total: 2.64295ms, Papers: 1000
+2025-06-24 16:58:06,177 - benchmark_runner - INFO -   size_1000_filtered: 1.946s, 513.8 papers/sec
+2025-06-24 16:58:06,177 - benchmark_runner - INFO - Testing time window: 10 years
+2025-06-24 16:58:06,177 - benchmark_runner - INFO - Running single computation benchmarks...
+2025-06-24 16:58:06,178 - benchmark_runner - INFO -   Size 50: 0.000s, 838965.7 papers/sec
+2025-06-24 16:58:06,178 - benchmark_runner - INFO -   Size 100: 0.000s, 231613.5 papers/sec
+2025-06-24 16:58:06,179 - benchmark_runner - INFO -   Size 200: 0.001s, 216359.8 papers/sec
+2025-06-24 16:58:06,179 - benchmark_runner - INFO - Running batch computation benchmarks...
+BATCH TIMING - Compute: 0.448165ms, Arrow: 0.020366ms, Total: 0.468531ms, Papers: 100
+2025-06-24 16:58:08,104 - benchmark_runner - INFO -   Batch 100: 1.925s, 52.0 papers/sec
+BATCH TIMING - Compute: 2.97188ms, Arrow: 0.022225ms, Total: 2.9941ms, Papers: 500
+2025-06-24 16:58:10,028 - benchmark_runner - INFO -   Batch 500: 1.923s, 260.0 papers/sec
+BATCH TIMING - Compute: 7.02346ms, Arrow: 0.024157ms, Total: 7.04761ms, Papers: 1000
+2025-06-24 16:58:11,952 - benchmark_runner - INFO -   Batch 1000: 1.924s, 519.8 papers/sec
+BATCH TIMING - Compute: 39.2716ms, Arrow: 0.125064ms, Total: 39.3967ms, Papers: 5000
+2025-06-24 16:58:13,910 - benchmark_runner - INFO -   Batch 5000: 1.957s, 2555.3 papers/sec
+2025-06-24 16:58:13,910 - benchmark_runner - INFO - Running filtered computation benchmarks...
+BATCH TIMING - Compute: 6.93496ms, Arrow: 0.034834ms, Total: 6.96979ms, Papers: 1000
+2025-06-24 16:58:15,898 - benchmark_runner - INFO -   unfiltered: 1.988s, 503.1 papers/sec
+FILTERED BATCH TIMING - Compute: 7.15984ms, Arrow: 0.038542ms, Total: 7.19838ms, Papers: 1000
+2025-06-24 16:58:17,828 - benchmark_runner - INFO -   {'year': [2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009]}: 1.929s, 518.4 papers/sec
+FILTERED BATCH TIMING - Compute: 1.0499ms, Arrow: 0.028528ms, Total: 1.07843ms, Papers: 1000
+2025-06-24 16:58:19,815 - benchmark_runner - INFO -   {'year': [2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019]}: 1.987s, 503.2 papers/sec
+FILTERED BATCH TIMING - Compute: 1.55705ms, Arrow: 0.028249ms, Total: 1.5853ms, Papers: 1000
+2025-06-24 16:58:21,737 - benchmark_runner - INFO -   {'year': [1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999]}: 1.921s, 520.6 papers/sec
+FILTERED BATCH TIMING - Compute: 1.04513ms, Arrow: 0.026165ms, Total: 1.07129ms, Papers: 1000
+2025-06-24 16:58:23,714 - benchmark_runner - INFO -   {'year': [2015, 2016, 2017, 2018, 2019, 2020]}: 1.976s, 506.0 papers/sec
+2025-06-24 16:58:23,714 - benchmark_runner - INFO - Running smart dispatch benchmarks...
+BATCH TIMING - Compute: 0.320227ms, Arrow: 0.028927ms, Total: 0.349154ms, Papers: 100
+2025-06-24 16:58:25,634 - benchmark_runner - INFO -   size_100_unfiltered: 1.919s, 52.1 papers/sec
+BATCH TIMING - Compute: 6.86925ms, Arrow: 0.024346ms, Total: 6.8936ms, Papers: 1000
+2025-06-24 16:58:27,632 - benchmark_runner - INFO -   size_1000_unfiltered: 1.998s, 500.6 papers/sec
+FILTERED BATCH TIMING - Compute: 0.350033ms, Arrow: 0.020463ms, Total: 0.370496ms, Papers: 100
+2025-06-24 16:58:29,618 - benchmark_runner - INFO -   size_100_filtered: 1.986s, 50.4 papers/sec
+FILTERED BATCH TIMING - Compute: 7.11755ms, Arrow: 0.024605ms, Total: 7.14215ms, Papers: 1000
+2025-06-24 16:58:31,544 - benchmark_runner - INFO -   size_1000_filtered: 1.925s, 519.4 papers/sec
+2025-06-24 16:58:31,544 - benchmark_runner - INFO - Micro-benchmark suite completed!
+2025-06-24 16:58:41,748 - __main__ - INFO - Benchmarks completed in 145.63 seconds
+2025-06-24 16:58:41,751 - benchmark_runner - INFO - Results saved to: benchmark_results/results/benchmark_results_micro_1750802321.json
+2025-06-24 16:58:41,751 - __main__ - INFO - Benchmark suite completed successfully!

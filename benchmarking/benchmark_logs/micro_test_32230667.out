@@ -1,0 +1,54 @@
+Enhanced CD-Index Micro-Benchmark Test
+Job ID: 32230667
+Node: midway3-0383
+Start time: Tue Jun 24 16:09:28 CDT 2025
+
+Using Python: /project/jevans/tip/disruption/code_wos_2023/cdindex-benchmark-env/bin/python
+Running validation test...
+Enhanced CD-Index Benchmarking Suite - Quick Test
+============================================================
+
+Testing file structure...
+✓ config.py exists
+✓ data_loader.py exists
+✓ benchmark_runner.py exists
+✓ results_analyzer.py exists
+✓ utils.py exists
+✓ setup.py exists
+✓ run_benchmarks.py exists
+✓ examples.py exists
+✓ README.md exists
+✓ Makefile exists
+Testing imports...
+✓ All core modules imported successfully
+Testing configuration...
+✓ Default micro config created
+✓ Config validation ran (found 3 expected issues)
+✓ Config serialization works
+✓ Config save/load works
+Testing data loader...
+✓ PyArrow is available
+✓ DataLoader created successfully
+✓ Method load_micro_dataset available
+✓ Method validate_data available
+✓ Method get_data_statistics available
+Testing benchmark runner...
+✓ BenchmarkRunner created successfully
+✓ Method run_micro_benchmark available
+✓ Method run_optimization_benchmark available
+✓ Method run_full_benchmark available
+✓ Results storage available
+Testing results analyzer...
+✓ ResultsAnalyzer created successfully
+✓ Method analyze_micro_results available
+✓ Method generate_html_report available
+✓ Method generate_plots available
+✓ Performance analysis works with dummy data
+
+============================================================
+Test Results: 6/6 tests passed
+✅ All tests passed! Benchmarking suite is ready.
+Validation passed, running micro benchmark...
+Using default micro configuration
+Using data cache: /project/jevans/tip/disruption/code_wos_2023/benchmarking/data_cache
+Using small dataset size

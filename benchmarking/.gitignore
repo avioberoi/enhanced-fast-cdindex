@@ -1,11 +1,11 @@
 # Enhanced CD-Index Benchmarking Suite - .gitignore
 
 # Runtime directories
-benchmark_results/
-benchmark_plots/
-benchmark_logs/
-slurm/
-__pycache__/
+# benchmark_results/
+# benchmark_plots/
+# benchmark_logs/
+# slurm/
+# __pycache__/
 
 # Data cache (using external cache)
 data_cache/

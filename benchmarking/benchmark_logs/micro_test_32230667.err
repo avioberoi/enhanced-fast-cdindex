@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "/project/jevans/tip/disruption/code_wos_2023/enhanced-fast-cdindex/benchmarking/run_benchmarks.py", line 417, in <module>
+    exit_code = main()
+  File "/project/jevans/tip/disruption/code_wos_2023/enhanced-fast-cdindex/benchmarking/run_benchmarks.py", line 264, in main
+    setup_logging(config)
+  File "/project/jevans/tip/disruption/code_wos_2023/enhanced-fast-cdindex/benchmarking/run_benchmarks.py", line 53, in setup_logging
+    file_handler = logging.FileHandler(log_file)
+  File "/project/jevans/tip/disruption/code_wos_2023/cdindex-benchmark-env/lib/python3.9/logging/__init__.py", line 1146, in __init__
+    StreamHandler.__init__(self, self._open())
+  File "/project/jevans/tip/disruption/code_wos_2023/cdindex-benchmark-env/lib/python3.9/logging/__init__.py", line 1175, in _open
+    return open(self.baseFilename, self.mode, encoding=self.encoding,
+FileNotFoundError: [Errno 2] No such file or directory: '/project/jevans/tip/disruption/code_wos_2023/enhanced-fast-cdindex/benchmarking/benchmark_results/logs/benchmark_1750799372.log'

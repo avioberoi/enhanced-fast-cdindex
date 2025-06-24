@@ -1,0 +1,110 @@
+Enhanced CD-Index Benchmarking Suite
+Job ID: 32234289
+Node: midway3-0383
+CPUs: 16
+Memory: 65536MB
+Start time: Tue Jun 24 16:49:45 CDT 2025
+
+Environment setup:
+  Python: /project/jevans/tip/disruption/code_wos_2023/cdindex-benchmark-env/bin/python
+  LD_LIBRARY_PATH: /project/jevans/tip/disruption/code_wos_2023/cdindex-benchmark-env/lib:/software/slurm-current-el8-x86_64/lib
+  PYTHONPATH: /project/jevans/tip/disruption/code_wos_2023/enhanced-fast-cdindex:/project/jevans/tip/disruption/code_wos_2023:
+  TIME_WINDOW_YEARS: 5
+  CHUNK_SIZE: 10000
+
+Checking Python environment...
+Validating benchmarking suite...
+Enhanced CD-Index Benchmarking Suite - Quick Test
+============================================================
+
+Testing file structure...
+✓ config.py exists
+✓ data_loader.py exists
+✓ benchmark_runner.py exists
+✓ results_analyzer.py exists
+✓ utils.py exists
+✓ setup.py exists
+✓ run_benchmarks.py exists
+✓ examples.py exists
+✓ README.md exists
+✓ Makefile exists
+Testing imports...
+✓ All core modules imported successfully
+Testing configuration...
+✓ Default micro config created
+✓ Config validation ran (found 2 expected issues)
+✓ Config serialization works
+✓ Config save/load works
+Testing data loader...
+✓ PyArrow is available
+✓ DataLoader created successfully
+✓ Method load_micro_dataset available
+✓ Method validate_data available
+✓ Method get_data_statistics available
+Testing benchmark runner...
+✓ BenchmarkRunner created successfully
+✓ Method run_micro_benchmark available
+✓ Method run_optimization_benchmark available
+✓ Method run_full_benchmark available
+✓ Results storage available
+Testing results analyzer...
+✓ ResultsAnalyzer created successfully
+✓ Method analyze_micro_results available
+✓ Method generate_html_report available
+✓ Method generate_plots available
+✓ Performance analysis works with dummy data
+
+============================================================
+Test Results: 6/6 tests passed
+✅ All tests passed! Benchmarking suite is ready.
+Benchmarking suite validation passed
+
+Setting up benchmarking environment...
+Enhanced CD-Index Benchmarking Suite Setup
+==================================================
+Checking Python version...
+✅ Python 3.9.23 is supported
+
+Checking dependencies...
+✅ pyarrow - PyArrow for data handling
+✅ pandas - Pandas for data analysis
+✅ matplotlib - Matplotlib for plotting
+✅ psutil - psutil for system monitoring
+✅ numpy - NumPy for numerical operations
+
+Checking Enhanced CD-Index...
+✅ Enhanced CD-Index module is available
+✅ Enhanced CD-Index can be instantiated
+
+Creating directory structure in ....
+✅ Created benchmark_results/
+✅ Created benchmark_plots/
+✅ Created benchmark_logs/
+✅ Created data_cache/
+✅ Created configs/
+
+Creating sample configuration files in ./configs...
+✅ Created micro_config.json
+✅ Created full_config.json
+
+Checking WoS data files in WoS_data...
+❌ WoS data directory not found: WoS_data
+
+Checking existing data cache: /project/jevans/tip/disruption/code_wos_2023/benchmarking/data_cache
+✅ Micro benchmark data found in cache
+   Cache contains: micro_edges.parquet, micro_vertices.parquet, paper_years.parquet, edges.parquet, id_mapping.parquet, micro_ids.parquet
+
+============================================================
+SETUP SUMMARY
+============================================================
+⚠️  Setup completed with issues.
+
+Some components may not work correctly.
+
+Next steps:
+  1. Ensure WoS data files are available
+
+Usage examples:
+  python run_benchmarks.py --type micro
+  python run_benchmarks.py --config configs/micro_config.json
+  python quick_test.py

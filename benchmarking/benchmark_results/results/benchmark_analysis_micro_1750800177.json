@@ -1,0 +1,349 @@
+{
+  "summary": {
+    "test_metadata": {
+      "vertex_count": 12000000,
+      "edge_count": 26803170,
+      "benchmark_papers": 10000,
+      "timestamp": 1750800086.632034
+    },
+    "overall_performance": {
+      "max_throughput": 645836.4353767683,
+      "avg_throughput": 81039.03179759659,
+      "throughput_std": 181906.0554106524,
+      "sample_count": 48
+    },
+    "memory_usage": {
+      "max_memory_mb": 0.015625,
+      "avg_memory_mb": 0.0005696614583333334,
+      "memory_std": 0.0027901538356932933
+    },
+    "cpu_utilization": {
+      "max_cpu_percent": 0,
+      "avg_cpu_percent": 0.0,
+      "cpu_std": 0.0
+    }
+  },
+  "performance_trends": {
+    "3": {
+      "single_performance": {
+        "max_throughput": 532483.2500198366,
+        "min_throughput": 353139.4953561186,
+        "avg_throughput": 435815.2240965144,
+        "throughput_std": 90486.92651185289
+      },
+      "batch_performance": {
+        "max_throughput": 2497.655668001091,
+        "optimal_batch_size": 5000,
+        "throughput_range": 2467.3800516463725,
+        "size_throughput_pairs": [
+          [
+            100,
+            30.275616354718174
+          ],
+          [
+            500,
+            250.10665304387837
+          ],
+          [
+            1000,
+            501.0201487159137
+          ],
+          [
+            5000,
+            2497.655668001091
+          ]
+        ]
+      },
+      "filter_impact": {
+        "baseline_throughput": 500.778038003279,
+        "filtered_results": {
+          "filter_2": {
+            "throughput": 499.8797467554864,
+            "overhead_percent": 0.1793791220106816,
+            "config": {
+              "year": [
+                2000,
+                2001,
+                2002,
+                2003,
+                2004,
+                2005,
+                2006,
+                2007,
+                2008,
+                2009
+              ]
+            }
+          },
+          "filter_3": {
+            "throughput": 500.607600288194,
+            "overhead_percent": 0.0340345826195869,
+            "config": {
+              "year": [
+                2010,
+                2011,
+                2012,
+                2013,
+                2014,
+                2015,
+                2016,
+                2017,
+                2018,
+                2019
+              ]
+            }
+          },
+          "filter_4": {
+            "throughput": 501.0075510044082,
+            "overhead_percent": -0.04583128326559898,
+            "config": {
+              "year": [
+                1990,
+                1991,
+                1992,
+                1993,
+                1994,
+                1995,
+                1996,
+                1997,
+                1998,
+                1999
+              ]
+            }
+          },
+          "filter_5": {
+            "throughput": 486.01384931168326,
+            "overhead_percent": 2.948250037174965,
+            "config": {
+              "year": [
+                2015,
+                2016,
+                2017,
+                2018,
+                2019,
+                2020
+              ]
+            }
+          }
+        }
+      },
+      "optimal_configs": {}
+    },
+    "5": {
+      "single_performance": {
+        "max_throughput": 639741.3155386082,
+        "min_throughput": 384655.16865847015,
+        "avg_throughput": 498140.1902084207,
+        "throughput_std": 129846.53268907352
+      },
+      "batch_performance": {
+        "max_throughput": 2411.5839114997902,
+        "optimal_batch_size": 5000,
+        "throughput_range": 2361.3842252348136,
+        "size_throughput_pairs": [
+          [
+            100,
+            50.19968626497663
+          ],
+          [
+            500,
+            242.61421264623354
+          ],
+          [
+            1000,
+            484.98822044413885
+          ],
+          [
+            5000,
+            2411.5839114997902
+          ]
+        ]
+      },
+      "filter_impact": {
+        "baseline_throughput": 489.20722328624106,
+        "filtered_results": {
+          "filter_2": {
+            "throughput": 494.2450610496332,
+            "overhead_percent": -1.0297962751961316,
+            "config": {
+              "year": [
+                2000,
+                2001,
+                2002,
+                2003,
+                2004,
+                2005,
+                2006,
+                2007,
+                2008,
+                2009
+              ]
+            }
+          },
+          "filter_3": {
+            "throughput": 495.7390979727052,
+            "overhead_percent": -1.3351958792812602,
+            "config": {
+              "year": [
+                2010,
+                2011,
+                2012,
+                2013,
+                2014,
+                2015,
+                2016,
+                2017,
+                2018,
+                2019
+              ]
+            }
+          },
+          "filter_4": {
+            "throughput": 501.6230951122602,
+            "overhead_percent": -2.5379575842351123,
+            "config": {
+              "year": [
+                1990,
+                1991,
+                1992,
+                1993,
+                1994,
+                1995,
+                1996,
+                1997,
+                1998,
+                1999
+              ]
+            }
+          },
+          "filter_5": {
+            "throughput": 501.2293378553136,
+            "overhead_percent": -2.4574687365231815,
+            "config": {
+              "year": [
+                2015,
+                2016,
+                2017,
+                2018,
+                2019,
+                2020
+              ]
+            }
+          }
+        }
+      },
+      "optimal_configs": {}
+    },
+    "10": {
+      "single_performance": {
+        "max_throughput": 645836.4353767683,
+        "min_throughput": 209151.4714246757,
+        "avg_throughput": 355901.467874599,
+        "throughput_std": 251097.37431300338
+      },
+      "batch_performance": {
+        "max_throughput": 2377.7693629481682,
+        "optimal_batch_size": 5000,
+        "throughput_range": 2329.170428022972,
+        "size_throughput_pairs": [
+          [
+            100,
+            48.59893492519615
+          ],
+          [
+            500,
+            250.4862608125087
+          ],
+          [
+            1000,
+            485.9354989827078
+          ],
+          [
+            5000,
+            2377.7693629481682
+          ]
+        ]
+      },
+      "filter_impact": {
+        "baseline_throughput": 499.66034657478,
+        "filtered_results": {
+          "filter_2": {
+            "throughput": 482.62573845783726,
+            "overhead_percent": 3.409237541805478,
+            "config": {
+              "year": [
+                2000,
+                2001,
+                2002,
+                2003,
+                2004,
+                2005,
+                2006,
+                2007,
+                2008,
+                2009
+              ]
+            }
+          },
+          "filter_3": {
+            "throughput": 501.932264377023,
+            "overhead_percent": -0.4546924361353034,
+            "config": {
+              "year": [
+                2010,
+                2011,
+                2012,
+                2013,
+                2014,
+                2015,
+                2016,
+                2017,
+                2018,
+                2019
+              ]
+            }
+          },
+          "filter_4": {
+            "throughput": 484.650317215899,
+            "overhead_percent": 3.00404654117066,
+            "config": {
+              "year": [
+                1990,
+                1991,
+                1992,
+                1993,
+                1994,
+                1995,
+                1996,
+                1997,
+                1998,
+                1999
+              ]
+            }
+          },
+          "filter_5": {
+            "throughput": 485.38702122424854,
+            "overhead_percent": 2.8566055818470497,
+            "config": {
+              "year": [
+                2015,
+                2016,
+                2017,
+                2018,
+                2019,
+                2020
+              ]
+            }
+          }
+        }
+      },
+      "optimal_configs": {}
+    }
+  },
+  "statistics": {},
+  "recommendations": [
+    "For 3-year windows, optimal batch size is 5,000 papers",
+    "For 5-year windows, optimal batch size is 5,000 papers",
+    "For 10-year windows, optimal batch size is 5,000 papers"
+  ]
+}
