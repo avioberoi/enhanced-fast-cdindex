@@ -109,6 +109,21 @@ Create a graph with some dummy data and compute the CD index::
 
     >>> graph.mcdindex("4Z", int(datetime.timedelta(days=1825).total_seconds()))
 
+Benchmarking
+------------
+
+A production-ready benchmarking suite lives in the ``benchmarking``
+directory.  The suite accepts environment variables such as
+``CHUNK_SIZE`` and ``MAX_CACHE_ENTRIES`` to tune processing behaviour.
+On clusters with SLURM you can start jobs using the provided scripts::
+
+    sbatch benchmarking/run_micro_test_slurm.sh
+    sbatch benchmarking/run_slurm_benchmark.sh micro small
+
+Benchmark results are saved under ``benchmarking/benchmark_results``.
+Sample JSON summaries can be found in ``benchmark_results/results/`` and
+plots in ``benchmark_results/plots/``.
+
 Further information
 -------
 
