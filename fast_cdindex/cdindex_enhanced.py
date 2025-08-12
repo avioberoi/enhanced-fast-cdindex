@@ -2,113 +2,41 @@ import pyarrow as pa
 import os
 import _cdindex
 
+# Re-export CiterFilter enum for convenience
+CiterFilter = _cdindex.CiterFilter
+
 class EnhancedGraph:
     def __init__(self):
         self._graph = _cdindex.EnhancedGraph()
 
-    def add_vertex_batch(self, arrow_table: pa.Table):
-        ids = arrow_table.column('paper_id').to_pylist()
-        years = arrow_table.column('year').to_pylist()
-        for pid, year in zip(ids, years):
-            self._graph.add_vertex(pid, int(year))
-
-    def add_edge_batch(self, arrow_table: pa.Table):
-        sources = arrow_table.column('source_id').to_pylist()
-        targets = arrow_table.column('target_id').to_pylist()
-        for src, tgt in zip(sources, targets):
-            self._graph.add_edge(src, tgt)
-
-    def ingest_properties(self, arrow_table: pa.Table, chunk_size: int = None):
-        old_cs = None
-        if chunk_size is not None:
-            old_cs = os.environ.get('INGEST_CHUNK_SIZE')
-            os.environ['INGEST_CHUNK_SIZE'] = str(chunk_size)
-        try:
-            self._graph.ingest_properties(arrow_table)
-        finally:
-            if chunk_size is not None:
-                if old_cs is None:
-                    del os.environ['INGEST_CHUNK_SIZE']
-                else:
-                    os.environ['INGEST_CHUNK_SIZE'] = old_cs
-
-    def build_property_indexes(self):
-        self._graph.build_property_indexes()
+    @property
+    def properties(self):
+        """Access to the PropertyStore for building year bitmaps and indexes."""
+        return self._graph.properties
 
     def cdindex(self, paper_id: int, years: int):
-        return self._graph.cdindex(paper_id, years)
-
-    def cdindex_filtered(self, paper_id: int, years: int, filters: dict):
-        return self._graph.cdindex_filtered(paper_id, years, filters)
-
-    def cdindex_batch(self, array: pa.Array, years: int) -> pa.Table:
-        return self._graph.cdindex_batch(array, years)
-
-    def cdindex_filtered_batch(self, array: pa.Array, years: int, filters: dict) -> pa.Table:
-        return self._graph.cdindex_filtered_batch(array, years, filters)
-
-    def clear_filter_cache(self):
-        """Clear the filter bitmap cache."""
-        self._graph.clear_filter_cache()
-
-    def cdindex_smart(self, paper_ids, years: int, filters: dict = None) -> pa.Table:
         """
-        Smart dispatch that automatically chooses between single and batch calls
-        based on request size and filter complexity.
+        Compute the CD index for a paper within a time window.
         
         Args:
-            paper_ids: int, list of ints, or PyArrow Array of paper IDs
-            years: time window in years
-            filters: optional filter dictionary
+            paper_id: The focal paper ID
+            years: Time window in years (passed directly to C++)
+        """
+        return self._graph.cdindex(paper_id, years)
+    
+    def cdindex_filtered(self, paper_id: int, years: int, filter_type):
+        """
+        Compute filtered CD index excluding or including specific regions.
+        
+        Args:
+            paper_id: The focal paper ID
+            years: Time window in years
+            filter_type: CiterFilter enum value (e.g., CiterFilter.ExcludeUS)
             
         Returns:
-            PyArrow Table with paper_id and cd{years} columns
+            Filtered CD index value
         """
-        # Handle single ID case
-        if isinstance(paper_ids, int):
-            paper_ids = [paper_ids]
-            
-        # Convert to PyArrow array if needed
-        if isinstance(paper_ids, list):
-            paper_ids = pa.array(paper_ids, type=pa.uint32())
-            
-        request_count = len(paper_ids)
-        has_filters = filters is not None and len(filters) > 0
-        
-        # Dispatch decision based on micro-benchmark results
-        if not has_filters:
-            # Unfiltered: single calls are much faster (350,000+ pps vs 6,000 pps batch even with optimizations)
-            # ALWAYS prefer single calls for unfiltered requests (batch never wins due to Arrow overhead)
-            if request_count <= 10000:  # Raised threshold - single is always better for unfiltered
-                # Use individual calls for all practical unfiltered batches
-                results = []
-                for i in range(request_count):
-                    pid = paper_ids[i].as_py()
-                    score = self.cdindex(pid, years)
-                    results.append({'paper_id': pid, f'cd{years}': score})
-                
-                # Convert to PyArrow Table
-                import pandas as pd
-                df = pd.DataFrame(results)
-                return pa.Table.from_pandas(df, preserve_index=False)
-            else:
-                # Use batch call only for extremely large unfiltered requests (>10K papers)
-                return self.cdindex_batch(paper_ids, years)
-        else:
-            # Filtered: batch calls are optimal (5,000+ pps vs 0.5 pps single)
-            # Always prefer batch for any multi-paper filtered request
-            if request_count == 1:
-                # Single filtered computation only for exactly 1 paper
-                pid = paper_ids[0].as_py()
-                score = self.cdindex_filtered(pid, years, filters)
-                results = [{'paper_id': pid, f'cd{years}': score}]
-                
-                import pandas as pd
-                df = pd.DataFrame(results)
-                return pa.Table.from_pandas(df, preserve_index=False)
-            else:
-                # Use batch call for all multi-paper filtered requests (even as small as 2 papers)
-                return self.cdindex_filtered_batch(paper_ids, years, filters)
+        return self._graph.cdindex_filtered(paper_id, years, filter_type)
 
     def add_vertices_from_arrow(self, arrow_table: pa.Table):
         self._graph.add_vertices_from_arrow(arrow_table)
@@ -121,6 +49,139 @@ class EnhancedGraph:
 
     def edge_count(self):
         return self._graph.edge_count()
+
+    def iindex(self, paper_id: int, years: int) -> int:
+        """
+        Compute the I index (in-degree of focal vertex at time t).
+        
+        Args:
+            paper_id: The focal paper ID
+            years: Time window in years (passed directly to C++)
+            
+        Returns:
+            Number of papers citing the focal paper within the time window
+        """
+        return self._graph.iindex(paper_id, years)
+    
+    def mcdindex(self, paper_id: int, years: int) -> float:
+        """
+        Compute the mCD index (simplified version: cdindex * iindex).
+        
+        Args:
+            paper_id: The focal paper ID
+            years: Time window in years (passed directly to C++)
+            
+        Returns:
+            The mCD index value (cdindex * iindex)
+        """
+        return self._graph.mcdindex(paper_id, years)
+    
+    def in_degree(self, paper_id: int) -> int:
+        """
+        Return the in-degree (number of citing papers) of the focal paper.
+        
+        Args:
+            paper_id: The paper ID
+            
+        Returns:
+            Number of papers citing this paper
+        """
+        return self._graph.in_degree(paper_id)
+    
+    def out_degree(self, paper_id: int) -> int:
+        """
+        Return the out-degree (number of cited papers) of the focal paper.
+        
+        Args:
+            paper_id: The paper ID
+            
+        Returns:
+            Number of papers cited by this paper
+        """
+        return self._graph.out_degree(paper_id)
+    
+    def in_edges(self, paper_id: int) -> list:
+        """
+        Return the list of papers citing the focal paper.
+        
+        Args:
+            paper_id: The paper ID
+            
+        Returns:
+            List of paper IDs that cite this paper
+        """
+        return self._graph.in_edges(paper_id)
+    
+    def out_edges(self, paper_id: int) -> list:
+        """
+        Return the list of papers cited by the focal paper.
+        
+        Args:
+            paper_id: The paper ID
+            
+        Returns:
+            List of paper IDs cited by this paper
+        """
+        return self._graph.out_edges(paper_id)
+    
+    def get_timestamp(self, paper_id: int) -> int:
+        """
+        Return the timestamp (publication year) of the paper.
+        
+        Args:
+            paper_id: The paper ID
+            
+        Returns:
+            The publication year of the paper
+        """
+        return self._graph.get_timestamp(paper_id)
+    
+    def clear_predecessor_cache(self):
+        """Clear the predecessor bitmap cache."""
+        self._graph.clear_predecessor_cache()
+    
+    def prepare_for_searching(self):
+        """Prepare graph for efficient searching by sorting edges."""
+        self._graph.prepare_for_searching()
+    
+    def build_region_bitmaps(self, us_codes: list, cn_codes: list, eu_codes: list):
+        """
+        Build region bitmaps for filtering CD-index computations.
+        
+        Args:
+            us_codes: List of country codes representing US
+            cn_codes: List of country codes representing China/HK/etc
+            eu_codes: List of country codes representing European countries
+            
+        Note: Country codes should match the integer codes used when ingesting
+        country data into the PropertyStore.
+        """
+        self._graph.build_region_bitmaps(us_codes, cn_codes, eu_codes)
+    
+    # Micro-benchmarking interface
+    def reset_benchmark(self):
+        """Reset micro-benchmark counters."""
+        _cdindex.g_benchmark.reset()
+    
+    def print_benchmark_summary(self):
+        """Print detailed micro-benchmark results."""
+        _cdindex.g_benchmark.print_summary()
+    
+    def get_benchmark_stats(self) -> dict:
+        """Get micro-benchmark statistics as a dictionary."""
+        bench = _cdindex.g_benchmark
+        total_time = bench.t1_ms + bench.t2_ms + bench.t3_ms
+        return {
+            'computations': bench.computations,
+            't1_ms': bench.t1_ms,  # F_t build time
+            't2_ms': bench.t2_ms,  # B_t build time  
+            't3_ms': bench.t3_ms,  # Cardinality ops time
+            'total_ms': total_time,
+            'throughput_per_sec': bench.computations / (total_time / 1000.0) if total_time > 0 else 0,
+            'hf_hit_rate': bench.hf_hit / bench.hf_all if bench.hf_all > 0 else 0,
+            'hb_hit_rate': bench.hb_hit / bench.hb_all if bench.hb_all > 0 else 0,
+            'hu_hit_rate': bench.hu_hit / bench.hu_all if bench.hu_all > 0 else 0,
+        }
 
     def debug_get_citers(self, paper_id: int, years: int) -> list:
         return self._graph.debug_get_citers(paper_id, years)

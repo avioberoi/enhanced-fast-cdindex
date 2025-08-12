@@ -22,6 +22,7 @@ ext_modules = [
         library_dirs=pa.get_library_dirs() + ["/project/jevans/tip/disruption/code_wos_2023/cdindex-benchmark-env/lib"],
         language="c++",
         cxx_std=17,
+        extra_compile_args=["-O3", "-march=native", "-DNDEBUG", "-flto"],
     ),
 ]
 
