@@ -1,5 +1,5 @@
-SOURCES=src/main.c src/cdindex.cpp
-OBJECTS=$(SOURCES:.c=.o)
+SOURCES=main.cpp cdindex.cpp
+OBJECTS=$(SOURCES:.cpp=.o)
 EXECUTABLE=bin/cdindex
 
 ifdef DEBUG
@@ -19,10 +19,10 @@ $(EXECUTABLE): $(OBJECTS)
 .PHONY: clean test
 
 clean:
-	rm -f src/*.o $(EXECUTABLE)
+	rm -f *.o $(EXECUTABLE)
 
 # Regression test
 test:
-	bin/cdindex | diff tests/bin.ok -
-	python tests/tests.py | diff tests/py.ok -
+	bin/cdindex | diff bin.ok -
+	python tests.py | diff py.ok -
 

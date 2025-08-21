@@ -1,10 +1,59 @@
-# Enhanced Fast CD-Index (with Country-Filtered Variants)
+# Enhanced Fast CD-Index
 
-This repo contains a **memory-efficient, high-throughput** implementation of the Disruption (CD) index with **region-filtered scores** (US, EU, China), written in C++ (Arrow + CRoaring) with a Python wrapper and HPC-friendly tooling.
+A **memory-efficient, high-throughput** implementation of the Disruption (CD) index with **region-filtered scores** (US, EU, China), written in C++ (Arrow + CRoaring) with Python wrapper and HPC-friendly tooling.
 
----
+## Table of Contents
 
-## Why we touched the legacy pipeline
+- [Quick Start](#quick-start)
+- [Repository Structure](#repository-structure)
+- [Enhanced Implementation](#enhanced-implementation)
+- [Building and Installation](#building-and-installation)
+- [API Reference](#api-reference)
+- [CLI and HPC Workflow](#cli-and-hpc-workflow)
+- [Performance](#performance)
+- [Legacy Code](#legacy-code)
+- [Contributing](#contributing)
+
+## Quick Start
+
+```python
+from fast_cdindex.cdindex_enhanced import EnhancedGraph
+
+# Create graph and load data
+g = EnhancedGraph()
+g.add_vertices_from_arrow(vertices_table)
+g.add_edges_from_arrow(edges_table)
+g.prepare_for_searching()
+
+# Compute CD index for a paper
+cd_score = g.cdindex(paper_id, years=5)
+us_only_score = g.cdindex_filtered(paper_id, years=5, CiterFilter.OnlyUS)
+```
+
+## Repository Structure
+
+```
+enhanced-fast-cdindex/
+├── src/                           # Enhanced C++ implementation
+│   ├── cdindex_enhanced.cpp      # Core C++ implementation
+│   ├── cdindex_enhanced.h        # C++ headers
+│   └── pybind.cpp                # Python bindings
+├── fast_cdindex/                  # Python wrapper
+│   ├── cdindex_enhanced.py       # Enhanced Python API
+│   └── time_utilities.py         # Utility functions
+├── country_filtered_cdindex/      # Country filtering tools
+│   ├── build_cache_from_tsv.py   # Data preprocessing
+│   └── compute_filtered_cd.py    # Batch processing
+├── benchmarking/                  # Validation and benchmarks
+├── legacy/                        # Original implementation
+│   └── README.md                 # Legacy code documentation
+├── tests/                        # Test suite
+└── docs/                         # Documentation
+```
+
+## Enhanced Implementation
+
+### Why We Enhanced the Legacy Pipeline
 
 ### What the legacy code did
 
@@ -22,7 +71,7 @@ This worked, but:
 
 ---
 
-## What we do now (Algebra changes)
+### Algorithmic Improvements
 
 We reformulate with three sets:
 
@@ -40,7 +89,7 @@ Then:
 
 This eliminates per-query **B\_t materialization** and the giant prefix arrays entirely.
 
-### Country filtering (include/exclude)
+### Country Filtering Architecture
 
 Let **R** be a region bitmap (US/EU/CN). We **only filter the citer side**.
 When we ask “what disruption looks like from outside the US”, we **still compute scores for papers with US authors**, and we include **everything they cited**; we just **exclude US citers** from the forward-looking side.
@@ -64,54 +113,7 @@ Example: a paper tagged both `usa` and `eu`:
 
 ---
 
-## Implementation highlights
-
-### Core (C++)
-
-* **CRoaring** bitmaps for sets; **fastunion** for year windows; **Arrow** for I/O.
-* **W\_t on demand**: union of only the needed per-year bitmaps. No prefix arrays.
-* **B\_any caching** (per focal): time-invariant, stored once, reused.
-* **Time-window LRU** cache (for `W_t`) keyed by `(f.time, Δ)`.
-* **Predecessor citer caches** (filtered/unfiltered) where needed.
-* **Incoming edges sorted by time** for `F_t` via binary search.
-* **Shared ownership** (`std::shared_ptr<const Roaring>`) returned from caches to avoid use-after-free.
-* **Thread-safe** region bitmaps via `std::call_once`.
-* **NaN semantics**: when the filtered i-set is empty (denominator = 0), CD returns **NaN**.
-  `mCD = CD * iindex` also returns **NaN** when `iindex==0`.
-
-### PropertyStore
-
-* Ingests Arrow Tables and builds **categorical bitmaps**, including **year** and **country**.
-* For the 299M country rows: we support an **eager region-only ingest** that directly builds **US/EU/CN** bitmaps from normalized strings, **without** materializing bitmaps for every country.
-* Optionally persist **region bitmaps** to disk (`us.roar`, `eu.roar`, `cn.roar`) and reload them for later runs.
-
-### Python wrapper
-
-* Thin wrapper over the C++ API with Arrow passthrough and micro-benchmark access.
-
----
-
-## Performance
-
-What changes matter most:
-
-* **Removed prefix arrays** → massive **memory savings** (we eliminated the \~119 GB explosion).
-* **One intersection instead of two** on the hot path (`B_any ∩ W_t` only).
-* **Small `W_t`** (few years union) + LRU caching.
-* **Time-invariant `B_any` per focal** (cached once).
-* **Sorted incoming edges** → `F_t` via two binary searches.
-
-The code carries a micro-benchmark:
-
-```
-g_benchmark: counts, time breakdown (F_t build / B_any+W_t / cardinalities), cache hit rates
-```
-
-Use it to confirm throughput on your hardware & dataset.
-
----
-
-## Building
+## Building and Installation
 
 ### Dependencies
 
@@ -122,15 +124,17 @@ Use it to confirm throughput on your hardware & dataset.
 
 ### Build the Python extension
 
-```
-pip install pyarrow
+```bash
+pip install pyarrow pybind11 numpy
 # ensure CRoaring + Arrow C++ are discoverable (LD_LIBRARY_PATH / CMAKE_PREFIX_PATH)
 python setup.py build_ext -j$(nproc) install
 ```
 
 ---
 
-## Public API (Python)
+## API Reference
+
+### Python API
 
 ```python
 from fast_cdindex.cdindex_enhanced import EnhancedGraph, CiterFilter
@@ -170,9 +174,21 @@ mcd = g.mcdindex(pid, 150)
 * `cdindex` returns **NaN** when the denominator (filtered i-set) is empty.
 * The **filter applies only to citers**; the focal and its references are unaffected.
 
+### Data Format Requirements
+
+* `paper_years.parquet`: `paper_id (uint32)`, `year (int32)` (one-to-one)
+* `edges.parquet`: `source_id (uint32)`, `target_id (uint32)` (≈1.55B edges)
+* `paper_countries.parquet`: `UID (string)`, `country (string)` (299M rows, normalized lowercase: `usa`, `eu`, `peoples r china`)
+
+**Normalization policy**
+
+* Countries normalized to lowercase.
+* **EU** is a single bucket (`eu`). **UK is not in EU** (policy).
+* A paper may map to **multiple** regions (OR semantics).
+
 ---
 
-## CLI & HPC workflow
+## CLI and HPC Workflow
 
 We use two scripts for scale-out workflows.
 
@@ -262,6 +278,82 @@ You can also run **legacy diagnostic mode** to cross-check algebra equivalence o
 
 ---
 
+## Performance
+
+### Key Improvements
+
+* **Removed prefix arrays** → massive **memory savings** (we eliminated the ~119 GB explosion).
+* **One intersection instead of two** on the hot path (`B_any ∩ W_t` only).
+* **Small `W_t`** (few years union) + LRU caching.
+* **Time-invariant `B_any` per focal** (cached once).
+* **Sorted incoming edges** → `F_t` via two binary searches.
+
+### Benchmarking
+
+The code includes a micro-benchmark system:
+
+```
+g_benchmark: counts, time breakdown (F_t build / B_any+W_t / cardinalities), cache hit rates
+```
+
+Use it to confirm throughput on your hardware & dataset.
+
+---
+
+## Implementation Details
+
+### Core C++ Architecture
+
+* **CRoaring** bitmaps for sets; **fastunion** for year windows; **Arrow** for I/O.
+* **W\_t on demand**: union of only the needed per-year bitmaps. No prefix arrays.
+* **B\_any caching** (per focal): time-invariant, stored once, reused.
+* **Time-window LRU** cache (for `W_t`) keyed by `(f.time, Δ)`.
+* **Predecessor citer caches** (filtered/unfiltered) where needed.
+* **Incoming edges sorted by time** for `F_t` via binary search.
+* **Shared ownership** (`std::shared_ptr<const Roaring>`) returned from caches to avoid use-after-free.
+* **Thread-safe** region bitmaps via `std::call_once`.
+* **NaN semantics**: when the filtered i-set is empty (denominator = 0), CD returns **NaN**.
+  `mCD = CD * iindex` also returns **NaN** when `iindex==0`.
+
+### PropertyStore
+
+* Ingests Arrow Tables and builds **categorical bitmaps**, including **year** and **country**.
+* For the 299M country rows: we support an **eager region-only ingest** that directly builds **US/EU/CN** bitmaps from normalized strings, **without** materializing bitmaps for every country.
+* Optionally persist **region bitmaps** to disk (`us.roar`, `eu.roar`, `cn.roar`) and reload them for later runs.
+
+### Python Wrapper
+
+* Thin wrapper over the C++ API with Arrow passthrough and micro-benchmark access.
+
+---
+
+## Legacy Code
+
+The original implementation has been moved to the [`legacy/`](legacy/) directory. See the [Legacy README](legacy/README.md) for details about the original code and why it was replaced.
+
+### Key differences from legacy:
+- Enhanced version eliminates memory explosion (from ~119GB to manageable levels)
+- Improved algorithm with better caching strategy
+- Native support for country-based filtering
+- Better performance on large datasets
+
+For backward compatibility or comparison purposes, the legacy code can still be built and run from the `legacy/` directory.
+
+---
+
+## Validation
+
+There's a validation driver in the `benchmarking/` directory that:
+
+* Loads the graph from cache,
+* Recomputes `cd`, `mcd`, `iindex`,
+* Compares against legacy scores with **tolerance**,
+* Reports diffs, match rates, and performance counters.
+
+You can also run **legacy diagnostic mode** to cross-check algebra equivalence on subsets.
+
+---
+
 ## Tuning & env vars
 
 * `INGEST_CHUNK_SIZE` (default 1,000,000): Arrow batch size.
@@ -271,22 +363,32 @@ You can also run **legacy diagnostic mode** to cross-check algebra equivalence o
 
 ---
 
-## File layout (high-level)
+## Project Structure
 
 ```
-fast_cdindex/
-  cdindex_enhanced.h / .cc      # C++ core + PropertyStore
-  pybind.cpp                     # Python bindings
-  cdindex_enhanced.py            # Python wrapper
-
-country_filtered_cdindex/
-  build_cache_from_tsv.py        # TSV → Parquet
-  compute_filtered_cd.py         # Compute un/filtered CD (chunked outputs)
-  sbatch_build_region_cache.sbatch
-  sbatch_compute_filtered_cd.sbatch
-  data_cache/                    # parquet caches
-  region_cache/                  # us.roar / eu.roar / cn.roar
-  out/                           # results
+enhanced-fast-cdindex/
+├── src/                          # Enhanced C++ implementation  
+│   ├── cdindex_enhanced.cpp     # Core C++ implementation
+│   ├── cdindex_enhanced.h       # C++ headers
+│   └── pybind.cpp               # Python bindings
+├── fast_cdindex/                # Python wrapper
+│   ├── cdindex_enhanced.py      # Enhanced Python API
+│   └── time_utilities.py        # Utility functions  
+├── country_filtered_cdindex/    # Country filtering tools
+│   ├── build_cache_from_tsv.py  # TSV → Parquet conversion
+│   ├── compute_filtered_cd.py   # Batch CD computation
+│   ├── sbatch_*.sbatch          # SLURM job scripts
+│   ├── data_cache/              # Parquet caches
+│   ├── region_cache/            # us.roar / eu.roar / cn.roar
+│   └── out/                     # Results
+├── legacy/                      # Original implementation
+│   ├── cdindex.cpp              # Legacy C++ implementation
+│   ├── cdindex.py               # Legacy Python implementation
+│   ├── Makefile                 # Legacy build system
+│   └── README.md                # Legacy documentation
+├── benchmarking/                # Validation and benchmarks
+├── tests/                       # Test suite
+└── docs/                        # Documentation
 ```
 
 ---
@@ -297,6 +399,30 @@ country_filtered_cdindex/
 * **Filter applies to citers only**; it does **not** change the focal or its references.
 * Always call `prepare_for_searching()` after loading edges to enable fast `F_t`.
 * Prefer **loading** region bitmaps (roar files) in large runs; building once is enough.
+
+---
+
+## Contributing
+
+### Development Guidelines
+
+1. **Legacy code**: Avoid modifying files in `legacy/` directory unless absolutely necessary
+2. **Enhanced code**: Focus development on the enhanced implementation
+3. **Tests**: Run existing tests to ensure compatibility
+4. **Performance**: Use the built-in benchmarking to validate performance improvements
+
+### Building for Development
+
+```bash
+# Install development dependencies
+pip install pyarrow pybind11 numpy
+
+# Build in development mode
+python setup.py develop
+
+# Run tests
+python -m pytest tests/
+```
 
 ---
 

@@ -1,33 +1,43 @@
-#!/usr/local/bin/python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-"""setup.py: This script installs the cdindex python module."""
+"""setup_enhanced.py: Build script for the enhanced cdindex Python module with pybind11."""
 
-__author__ = "Russell J. Funk and Diomidis Spinellis"
-__copyright__ = "Copyright (C) 2019, 2023"
+from pybind11.setup_helpers import Pybind11Extension, build_ext
+from setuptools import setup, find_packages
+import pybind11
+import pyarrow as pa
+import os
 
-# built in modules
-from setuptools import setup, Extension, find_packages
+# Define the extension module
+ext_modules = [
+    Pybind11Extension(
+        "_cdindex",
+        ["src/cdindex_enhanced.cpp", "src/pybind.cpp"],
+        include_dirs=[
+            "src",
+            pa.get_include(),
+        ],
+        libraries=["arrow", "arrow_python", "roaring"],
+        library_dirs=pa.get_library_dirs() + ["/project/jevans/tip/disruption/code_wos_2023/cdindex-benchmark-env/lib"],
+        language="c++",
+        cxx_std=17,
+        extra_compile_args=["-O3", "-march=native", "-DNDEBUG", "-flto"],
+    ),
+]
 
-setup(name="fast_cdindex",
-    version="1.2.0",
-    description="Package for quickly computing the cdindex.",
-    author=["Russell J. Funk", "Diomidis Spinellis"],
-    author_email=["russellfunk@gmail.com", "dds@aueb.gr"],
-    url="https://github.com:dspinellis/cdindex",
-    license="GNU General Public License (GPL)",
-    install_requires=['future'],
-    ext_modules=[
-                  Extension("fast_cdindex._cdindex",
-                            ["src/cdindex.cpp", 
-                             "fast_cdindex/pycdindex.cpp"],
-                             include_dirs = ["src"],
-                             headers = ["src/cdindex.h"],
-                           )
-                ],
+setup(
+    name="fast_cdindex_enhanced",
+    version="1.0.0",
+    description="Enhanced package for computing the CD index with filtering capabilities",
+    author="Enhanced Development Team",
+    ext_modules=ext_modules,
+    cmdclass={"build_ext": build_ext},
     packages=find_packages(),
-    include_files=['src/cdindex.h']
+    install_requires=[
+        "pybind11",
+        "pyarrow>=12.0.0",
+        "numpy",
+    ],
+    python_requires=">=3.8",
 )
-
-# python setup.py build_ext --inplace
-# python setup.py sdist
