@@ -1,9 +1,11 @@
 import pyarrow as pa
+import pyarrow.parquet as pq
 import os
 import _cdindex
 
-# Re-export CiterFilter enum for convenience
+# Re-export CiterFilter enum and base Graph for convenience
 CiterFilter = _cdindex.CiterFilter
+Graph = _cdindex.Graph
 
 class EnhancedGraph:
     def __init__(self):
@@ -11,7 +13,7 @@ class EnhancedGraph:
 
     @property
     def properties(self):
-        """Access to the PropertyStore for building year bitmaps and indexes."""
+        """PropertyStore for building/using bitmaps (year, country, etc.)"""
         return self._graph.properties
 
     def cdindex(self, paper_id: int, years: int):
@@ -45,10 +47,10 @@ class EnhancedGraph:
         self._graph.add_edges_from_arrow(arrow_table)
 
     def vertex_count(self):
-        return self._graph.vertex_count()
+        return int(self._graph.vertex_count())
 
     def edge_count(self):
-        return self._graph.edge_count()
+        return int(self._graph.edge_count())
 
     def iindex(self, paper_id: int, years: int) -> int:
         """
@@ -144,19 +146,26 @@ class EnhancedGraph:
         """Prepare graph for efficient searching by sorting edges."""
         self._graph.prepare_for_searching()
     
-    def build_region_bitmaps(self, us_codes: list, cn_codes: list, eu_codes: list):
+    def build_region_bitmaps(self, us_names: list, cn_names: list, eu_names: list):
         """
-        Build region bitmaps for filtering CD-index computations.
+        Build region bitmaps for filtering CD-index computations (by COUNTRY NAMES)
+        
+        Note: Names must match normalized lowercase strings in parquet
         
         Args:
-            us_codes: List of country codes representing US
-            cn_codes: List of country codes representing China/HK/etc
-            eu_codes: List of country codes representing European countries
+            us_names: list[str] names for US (e.g. ["usa","united states"])
+            cn_names: list[str] names for CN/HK/Macau variants
+            eu_names: list[str] names for EU countries
             
-        Note: Country codes should match the integer codes used when ingesting
-        country data into the PropertyStore.
+        Note: Names must match normalized lowercase strings in parquet
         """
-        self._graph.build_region_bitmaps(us_codes, cn_codes, eu_codes)
+        self._graph.build_region_bitmaps(us_names, cn_names, eu_names)
+    
+    def ingest_countries_from_parquet(self, table: pa.Table, uid_col: str = "UID", country_col: str = "country"):
+        """
+        Ingest normalized country strings and build 'country' bitmaps directly.
+        """
+        self._graph.ingest_countries_from_parquet(table, uid_col, country_col)
     
     # Micro-benchmarking interface
     def reset_benchmark(self):
@@ -183,8 +192,59 @@ class EnhancedGraph:
             'hu_hit_rate': bench.hu_hit / bench.hu_all if bench.hu_all > 0 else 0,
         }
 
-    def debug_get_citers(self, paper_id: int, years: int) -> list:
-        return self._graph.debug_get_citers(paper_id, years)
+    # def debug_get_citers(self, paper_id: int, years: int) -> list:
+    #     return self._graph.debug_get_citers(paper_id, years)
 
-    def debug_get_references(self, paper_id: int) -> list:
-        return self._graph.debug_get_references(paper_id)
+    # def debug_get_references(self, paper_id: int) -> list:
+    #     return self._graph.debug_get_references(paper_id)
+
+
+    from typing import Optional
+
+    def read_graph_from_tsv_cache(tsv_cache_dir: str,
+                                  load_properties: bool = True,
+                                  limit_edges: Optional[int] = None):
+        """
+        Load a graph from TSV cache files.
+        
+        Args:
+            tsv_cache_dir: Directory containing paper_years.parquet (or vertices.parquet) and edges.parquet
+            load_properties: Whether to load and index properties (for year filtering)
+            limit_edges: Optional limit on number of edges to load (for testing)
+            
+        Returns:
+            EnhancedGraph instance with data loaded
+        """
+        graph = EnhancedGraph()
+        
+        # Load vertices
+        vertices_path = os.path.join(tsv_cache_dir, 'paper_years.parquet')
+        if not os.path.exists(vertices_path):
+            alt_vertices = os.path.join(tsv_cache_dir, 'vertices.parquet')
+            if os.path.exists(alt_vertices):
+                vertices_path = alt_vertices
+        if os.path.exists(vertices_path):
+            vertices_table = pq.read_table(vertices_path)
+            graph.add_vertices_from_arrow(vertices_table)
+            
+            # Load properties if requested
+            if load_properties:
+                graph.properties.ingest_arrow(vertices_table)
+                graph.properties.build_indexes()
+        
+        # Load edges
+        edges_path = os.path.join(tsv_cache_dir, 'edges.parquet')
+        if os.path.exists(edges_path):
+            if isinstance(limit_edges, int) and limit_edges > 0:
+                # Read limited edges for testing
+                edges_table = pq.read_table(edges_path)
+                if edges_table.num_rows > limit_edges:
+                    edges_table = edges_table.slice(0, limit_edges)
+            else:
+                edges_table = pq.read_table(edges_path)
+            graph.add_edges_from_arrow(edges_table)
+        
+        # Prepare for searching
+        graph.prepare_for_searching()
+        
+        return graph

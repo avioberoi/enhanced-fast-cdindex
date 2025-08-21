@@ -1,6 +1,5 @@
 #include "cdindex_enhanced.h"
 #include <arrow/api.h>
-#include <arrow/compute/api.h>
 #include <roaring/roaring.hh>
 #include <absl/container/flat_hash_map.h>
 #include <omp.h>
@@ -8,6 +7,15 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <cassert>
+#include <algorithm>
+#include <unordered_set>
+#include <cctype>
+
+// Helper for returning NaN consistently
+static inline double return_nan() {
+    return std::numeric_limits<double>::quiet_NaN();
+}
 
 static int64_t get_env_int(const char* var, int64_t def) {
     if (auto e = std::getenv(var)) try { auto v = std::stoll(e); if (v > 0) return v; } catch(...) {}
@@ -51,16 +59,16 @@ void CDIndexBenchmark::print_summary() const {
     std::cerr << "============================================\n\n";
 }
 
-// Timing utility for profiling
-class Timer {
-    std::chrono::high_resolution_clock::time_point start_;
-public:
-    Timer() : start_(std::chrono::high_resolution_clock::now()) {}
-    double elapsed_ms() const {
-        auto end = std::chrono::high_resolution_clock::now();
-        return std::chrono::duration<double, std::milli>(end - start_).count();
-    }
-};
+// // Timing utility for profiling
+// class Timer {
+//     std::chrono::high_resolution_clock::time_point start_;
+// public:
+//     Timer() : start_(std::chrono::high_resolution_clock::now()) {}
+//     double elapsed_ms() const {
+//         auto end = std::chrono::high_resolution_clock::now();
+//         return std::chrono::duration<double, std::milli>(end - start_).count();
+//     }
+// };
 
 // Vertex methods
 Vertex::Vertex(VertexId id, timestamp_t time) : id(id), time(time) {}
@@ -116,19 +124,23 @@ arrow::Status PropertyStore::ingest_arrow(const std::shared_ptr<arrow::Table>& t
                 auto int_array = std::static_pointer_cast<arrow::Int64Array>(col);
                 for (int64_t j = 0; j < col->length(); ++j) {
                     if (!col->IsNull(j)) {
-                        add_categorical(ids_array->Value(j), col_name, int_array->Value(j));
+                        add_categorical(ids_array->Value(j), col_name, static_cast<int>(int_array->Value(j)));
                     }
                 }
                 } else {
                     auto int32_array = std::static_pointer_cast<arrow::Int32Array>(col);
                     for (int64_t j = 0; j < col->length(); ++j) {
                         if (!col->IsNull(j)) {
-                            add_categorical(ids_array->Value(j), col_name, static_cast<int64_t>(int32_array->Value(j)));
+                            add_categorical(ids_array->Value(j), col_name, static_cast<int>(int32_array->Value(j)));
                         }
                     }
                 }
             } else if (type_id == arrow::Type::STRING || type_id == arrow::Type::LARGE_STRING) {
-                auto str_array = std::static_pointer_cast<arrow::StringArray>(col);
+                // Cast to concrete string array types and use GetString(i)
+                std::shared_ptr<arrow::StringArray> s_arr;
+                std::shared_ptr<arrow::LargeStringArray> ls_arr;
+                if (type_id == arrow::Type::STRING) s_arr  = std::static_pointer_cast<arrow::StringArray>(col);
+                else ls_arr = std::static_pointer_cast<arrow::LargeStringArray>(col);
                 auto& dict = string_dictionaries_[col_name];
                 // Pre-reserve dictionary capacity to avoid rehashing
                 if (dict.empty()) {
@@ -136,7 +148,9 @@ arrow::Status PropertyStore::ingest_arrow(const std::shared_ptr<arrow::Table>& t
                 }
                 for (int64_t j = 0; j < col->length(); ++j) {
                     if (!col->IsNull(j)) {
-                        std::string val = str_array->GetString(j);
+                        std::string val = (s_arr ? s_arr->GetString(j) : ls_arr->GetString(j));
+                        // normalize lowercase (countries already normalized, but safe)
+                        for (auto& ch : val) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
                         int code;
                         auto it = dict.find(val);
                         if (it == dict.end()) {
@@ -240,6 +254,26 @@ Roaring PropertyStore::get_combined_bitmap(const std::string& prop_name, const s
     return result;
 }
 
+std::vector<int> PropertyStore::get_codes_for_strings(const std::string& prop,
+                                                        const std::vector<std::string>& names) const {
+    std::vector<int> out;
+    auto it = string_dictionaries_.find(prop);
+    if (it == string_dictionaries_.end()) return out;
+    out.reserve(names.size());
+    for (auto s : names) {
+        for (auto& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        auto jt = it->second.find(s);
+        if (jt != it->second.end()) out.push_back(jt->second);
+    }
+    return out;
+}
+
+Roaring PropertyStore::get_combined_bitmap_str(const std::string& prop_name,
+                                                const std::vector<std::string>& names) const {
+    return get_combined_bitmap(prop_name, get_codes_for_strings(prop_name, names));
+}
+
+
 void PropertyStore::clear() { 
     categorical_properties_.clear(); 
     categorical_bitmaps_.clear(); 
@@ -303,6 +337,76 @@ Roaring PropertyStore::get_window_bitmap_by_union(const std::string& prop_name, 
     return W;
 }
 
+arrow::Status PropertyStore::ingest_country_direct(const std::shared_ptr<arrow::Table>& table,
+                                                   const std::unordered_map<std::string, VertexId>& uid2id,
+                                                   const std::string& uid_col,
+                                                   const std::string& country_col) {
+    if (!table) return arrow::Status::Invalid("null table for ingest_country_direct");
+    auto uid_arr = table->GetColumnByName(uid_col);
+    auto cn_arr  = table->GetColumnByName(country_col);
+    if (!uid_arr || !cn_arr) {
+        return arrow::Status::Invalid("country table missing UID or country column");
+    }
+    // Ensure bitmap map exists
+    auto& bmp_map = categorical_bitmaps_["country"]; // value->bitmap
+    auto& dict    = string_dictionaries_["country"]; // string->code
+    // Iterate in batches
+    arrow::TableBatchReader reader(*table);
+    reader.set_chunksize(get_ingest_chunk_size());
+    std::shared_ptr<arrow::RecordBatch> batch;
+    while (true) {
+        ARROW_ASSIGN_OR_RAISE(batch, reader.Next());
+        if (!batch) break;
+        auto uid_col_arr = batch->GetColumnByName(uid_col);
+        auto c_col_arr   = batch->GetColumnByName(country_col);
+        if (!uid_col_arr || !c_col_arr) continue;
+        
+        const auto uid_tid = uid_col_arr->type()->id();
+        const auto c_tid   = c_col_arr->type()->id();
+        std::shared_ptr<arrow::StringArray> u_str;
+        std::shared_ptr<arrow::LargeStringArray> u_lstr;
+        std::shared_ptr<arrow::UInt32Array> u_u32;
+        std::shared_ptr<arrow::Int32Array> u_i32;
+        std::shared_ptr<arrow::Int64Array> u_i64;
+        std::shared_ptr<arrow::StringArray> c_str;
+        std::shared_ptr<arrow::LargeStringArray> c_lstr;
+        if (uid_tid == arrow::Type::STRING) u_str  = std::static_pointer_cast<arrow::StringArray>(uid_col_arr);
+        else if (uid_tid == arrow::Type::LARGE_STRING) u_lstr = std::static_pointer_cast<arrow::LargeStringArray>(uid_col_arr);
+        else if (uid_tid == arrow::Type::UINT32) u_u32  = std::static_pointer_cast<arrow::UInt32Array>(uid_col_arr);
+        else if (uid_tid == arrow::Type::INT32) u_i32  = std::static_pointer_cast<arrow::Int32Array>(uid_col_arr);
+        else if (uid_tid == arrow::Type::INT64) u_i64  = std::static_pointer_cast<arrow::Int64Array>(uid_col_arr);
+        if (c_tid == arrow::Type::STRING) c_str  = std::static_pointer_cast<arrow::StringArray>(c_col_arr);
+        else if (c_tid == arrow::Type::LARGE_STRING) c_lstr = std::static_pointer_cast<arrow::LargeStringArray>(c_col_arr);
+        for (int64_t i = 0; i < batch->num_rows(); ++i) {
+            // Skip nulls
+            if (uid_col_arr->IsNull(i) || c_col_arr->IsNull(i)) continue;
+            std::string uid;
+            if (u_str)      uid = u_str->GetString(i);
+            else if (u_lstr)uid = u_lstr->GetString(i);
+            else if (u_u32) uid = std::to_string(u_u32->Value(i));
+            else if (u_i32) uid = std::to_string(u_i32->Value(i));
+            else if (u_i64) uid = std::to_string(u_i64->Value(i));
+            else continue; // unsupported UID type
+            auto it_id = uid2id.find(uid);
+            if (it_id == uid2id.end()) continue; // UID not present in graph
+            std::string country = c_str ? c_str->GetString(i) : (c_lstr ? c_lstr->GetString(i) : std::string());
+            if (country.empty()) continue;
+            // normalized already, but enforce lowercase just in case
+            for (auto& ch : country) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            // intern country string to code
+            int code;
+            auto it = dict.find(country);
+            if (it == dict.end()) {
+                code = static_cast<int>(dict.size()) + 1;
+                dict[country] = code;
+            } else {
+                code = it->second;
+            }
+            bmp_map[code].add(it_id->second);
+        }
+    }
+    return arrow::Status::OK();
+}
 static Roaring build_ref_bitmap(const std::vector<Vertex*>& refs, timestamp_t f, time_delta_t d) {
     Roaring r;
     for (auto* v : refs) if (v->time > f && v->time <= f + d) r.add(v->id);
@@ -351,26 +455,14 @@ void Graph::add_edge(VertexId source_id, VertexId target_id) {
     }
 }
 double Graph::cdindex(VertexId focal_id, time_delta_t dt) { 
-    // Pass empty citers vector to build the full correct set in compute_cdindex_logic
-    return compute_cdindex_logic(focal_id, {}, dt); 
+    // Delegate to unified core with no region filter
+    return cdindex_core(focal_id, dt, nullptr, true);
 }
-double Graph::compute_cdindex_logic(VertexId fid, const std::vector<Vertex*>& citers, time_delta_t dt) {
+double Graph::cdindex_core(VertexId fid, time_delta_t dt, const Roaring* region, bool include_region) {
     auto fit = vertices_.find(fid);
-    if (fit == vertices_.end()) return 0.0;
-    Vertex* focal = fit->second;
-    timestamp_t ft = focal->time;
-    
-    // CD Index (Funk & Owen-Smith) tripartite graph structure:
-    // 1. Focal patent f (the paper we're analyzing)
-    // 2. Predecessors b = {all papers cited by f} (focal->outgoing_edges)
-    // 3. Forward-citing patents i = {all papers that cite f OR any b, within time window}
-    //
-    // For each forward-citing patent i:
-    //   f_it = 1 if i cites f, 0 otherwise
-    //   b_it = 1 if i cites any predecessor in b, 0 otherwise  
-    //   contribution = -2 * f_it * b_it + f_it
-    //
-    // Cases: +1 = destabilizing (cites only f), -1 = consolidating (cites f+b), 0 = neutral (cites only b)
+    if (fit == vertices_.end()) return return_nan();
+    const Vertex* focal = fit->second;
+    const timestamp_t ft = focal->time;
     
     // Step 1: Build F_t = time-filtered citers of focal
     Roaring F_t;
@@ -384,253 +476,164 @@ double Graph::compute_cdindex_logic(VertexId fid, const std::vector<Vertex*>& ci
         }
     }
     
-    // Step 2: Build B_t = time-filtered citers of any predecessor, and B_any = unfiltered citers
-    Roaring B_t;
+    // Step 2: Get B_any and W_t with safe shared ownership
+    std::shared_ptr<const Roaring> B_any_sp, W_t_sp;
     const Roaring* B_any_ptr = nullptr;
-    Roaring B_any_local; // For base Graph fallback
+    const Roaring* W_t_ptr = nullptr;
     
-    // PERFORMANCE FIX: Detect graph type once, not per-predecessor
-    EnhancedGraph* enhanced_graph = dynamic_cast<EnhancedGraph*>(this);
+    // PERFORMANCE FIX: Detect graph type once
+    const auto* enhanced_graph = dynamic_cast<const EnhancedGraph*>(this);
     
-    // Step 2: Get B_any reference (cached per focal)
     {
         ScopedTimer _t2(g_benchmark.t2);
         if (enhanced_graph) {
-            // Enhanced path: get B_any (no more B_t building!)
-            B_any_ptr = &enhanced_graph->get_bany_for_focal(fid);
+            // Enhanced path: get cached B_any and W_t with shared ownership
+            B_any_sp = enhanced_graph->get_bany_for_focal_sp(fid);
+            W_t_sp = enhanced_graph->get_window_bitmap_sp(ft, dt);
+            B_any_ptr = B_any_sp.get();
+            W_t_ptr = W_t_sp.get();
         } else {
-            // Base Graph path: build B_any_local
-            for (auto* e : focal->outgoing_edges) {
+            // Base Graph fallback: build B_any and W_t locally
+            // Note: Base path is for diagnostic/debug only - not optimized for production
+            auto B_any_local = std::make_shared<Roaring>();
+            for (const auto* e : focal->outgoing_edges) {
                 VertexId b = e->target->id;
                 auto it = incoming_edges_.find(b);
                 if (it != incoming_edges_.end()) {
-                    // Add to B_any (unfiltered)
-                    for (auto* c : it->second) B_any_local.add(c->id);
+                    for (const auto* c : it->second) B_any_local->add(c->id);
                 }
             }
-            B_any_ptr = &B_any_local;
+            B_any_sp = B_any_local;
+            B_any_ptr = B_any_sp.get();
+            
+            // Build W_t for base graph (O(V) - expensive!)
+            auto W_t_local = std::make_shared<Roaring>();
+            for (const auto& [vid, vertex] : vertices_) {
+                if (vertex->time > ft && vertex->time <= ft + dt) {
+                    W_t_local->add(vid);
+                }
+            }
+            W_t_sp = W_t_local;
+            W_t_ptr = W_t_sp.get();
         }
     }
     
-    // Step 3: Use window bitmap optimization - no B_t building needed!
-    if (citers.empty()) {
-        ScopedTimer _t3(g_benchmark.t3);
-        ++g_benchmark.n;  // Count this computation
-        
-        // Get cardinalities for the mathematical reformulation
-        uint64_t cF = F_t.cardinality();
-        uint64_t cFB = F_t.and_cardinality(*B_any_ptr);
-        
-        // Compute denominator: |F_t ∪ B_t| = |F_t| + |B_any ∩ W_t| - |F_t ∩ B_any|
-        uint64_t denom = 0;
-        if (enhanced_graph) {
-            // Single intersection with cached small W_t bitmap - much faster!
-            const Roaring& W_t = enhanced_graph->get_window_bitmap(ft, dt);
-            uint64_t bwin = B_any_ptr->and_cardinality(W_t);     // single intersection
-            denom = cF + bwin - cFB;
-        } else {
-            // Fallback for base Graph: build B_t the old way
-            Roaring B_t;
-            for (auto* e : focal->outgoing_edges) {
-                VertexId b = e->target->id;
-                auto it = incoming_edges_.find(b);
-                if (it != incoming_edges_.end()) {
-                    Roaring filtered = incoming_edges_sorted_by_time_ ? 
-                                       build_ref_bitmap_sorted(it->second, ft, dt) :
-                                       build_ref_bitmap(it->second, ft, dt);
-                    B_t |= filtered;
-                }
-            }
-            denom = F_t.or_cardinality(B_t);
+    // Step 3: Compute cardinalities with optional region filter
+    ScopedTimer _t3(g_benchmark.t3);
+    
+    // FAST PATH 1: Empty F_t with no filter
+    const uint64_t cF = F_t.cardinality();
+    if (!region && cF == 0) {
+        // Only need bwin_all for denominator
+        const uint64_t bwin_all = B_any_ptr->and_cardinality(*W_t_ptr);
+        if (bwin_all == 0) {
+            return return_nan();  // Empty i-set
         }
-        
-        if (denom == 0) return 0.0;
-        
-        // Numerator stays the same: |F_t| - 2*|F_t ∩ B_any|
-        double numerator = static_cast<double>(cF) - 2.0 * static_cast<double>(cFB);
-        return numerator / static_cast<double>(denom);
+        ++g_benchmark.n;  // Count successful computation
+        // Numerator = 0, Denominator = bwin_all
+        return 0.0;
     }
     
-    // Handle non-empty citers case (fallback to old approach for now)
-    if (!citers.empty()) {
-        // For citers filtering, fall back to materializing bitmaps (less common path)
-        Roaring I_t = F_t;
-        
-        // Build B_t properly for this fallback path
-        Roaring B_t_fallback;
-        if (enhanced_graph) {
-            // For the fallback path with citers, we still need to materialize B_t
-            // This is less common, so the performance impact is smaller
-            const Roaring& W_t = enhanced_graph->get_window_bitmap(ft, dt);
-            B_t_fallback = *B_any_ptr & W_t;  // Intersection for time-filtered B_t
-        } else {
-            // Base Graph fallback: build B_t the old way
-            for (auto* e : focal->outgoing_edges) {
-                VertexId b = e->target->id;
-                auto it = incoming_edges_.find(b);
-                if (it != incoming_edges_.end()) {
-                    Roaring filtered = incoming_edges_sorted_by_time_ ? 
-                                       build_ref_bitmap_sorted(it->second, ft, dt) :
-                                       build_ref_bitmap(it->second, ft, dt);
-                    B_t_fallback |= filtered;
-                }
-            }
-        }
-        I_t |= B_t_fallback;
-        
-        Roaring citers_bm;
-        for (auto* c : citers) citers_bm.add(c->id);
-        I_t &= citers_bm;
-        F_t &= citers_bm;
-        
-        if (I_t.isEmpty()) return 0.0;
-        
-        uint64_t denom = I_t.cardinality();
-        uint64_t cF = F_t.cardinality();
-        uint64_t cFB = enhanced_graph ? 
-            F_t.and_cardinality(enhanced_graph->get_bany_for_focal(fid)) :
-            F_t.and_cardinality(B_any_local);
-        
-        double numerator = static_cast<double>(cF) - 2.0 * static_cast<double>(cFB);
-        return numerator / static_cast<double>(denom);
-    }
+    // Handle region filtering efficiently
+    uint64_t cF_C, cFB_C, bwin_C;
     
-    // Should not reach here for the normal case (citers.empty())
-    return 0.0;
-}
-
-  // Build once from PropertyStore (see helper below) and keep in EnhancedGraph
-  
-  double Graph::cdindex_filtered(VertexId fid, time_delta_t dt, CiterFilter filt) {
-      auto fit = vertices_.find(fid);
-      if (fit == vertices_.end()) return 0.0;
-      Vertex* focal = fit->second;
-      timestamp_t ft = focal->time;
-  
-      // 1) F_t
-      Roaring F_t;
-      if (auto it = incoming_edges_.find(fid); it != incoming_edges_.end()) {
-          F_t = incoming_edges_sorted_by_time_
-              ? build_ref_bitmap_sorted(it->second, ft, dt)
-              : build_ref_bitmap(it->second, ft, dt);
-      }
-  
-      // 2) B_any and W_t (by ref; cached)
-      EnhancedGraph* eg = dynamic_cast<EnhancedGraph*>(this);
-      const Roaring* B_any = nullptr;
-      const Roaring* W_t   = nullptr;
-      if (eg) {
-          B_any = &eg->get_bany_for_focal(fid);
-          W_t   = &eg->get_window_bitmap(ft, dt);
-      } else {
-          // Base fallback: build B_any once (unfiltered)
-          // Note: These are allocated on heap to avoid stack overflow for large graphs
-          std::unique_ptr<Roaring> tmp_bany = std::make_unique<Roaring>();
-          std::unique_ptr<Roaring> tmp_wt = std::make_unique<Roaring>();
-          
-          for (auto* e : focal->outgoing_edges) {
-              if (auto in_it = incoming_edges_.find(e->target->id); in_it != incoming_edges_.end())
-                  for (Vertex* citer : in_it->second) tmp_bany->add(citer->id);
-          }
-          B_any = tmp_bany.get();
-          
-          // W_t fallback: build time window bitmap (papers in (ft, ft+dt])
-          for (const auto& [vid, vertex] : vertices_) {
-              if (vertex->time > ft && vertex->time <= ft + dt) {
-                  tmp_wt->add(vid);
-              }
-          }
-          W_t = tmp_wt.get();
-      }
-  
-      // 3) Select region bitmap R (US/CN/EU) or empty for None
-      const Roaring* R = nullptr;
-      if (eg) R = eg->region_bitmap_for(filt);  // returns &us / &cn / &eu, or nullptr
-  
-      // ---- Cardinalities with filter (no B_t) ----
-      uint64_t cF  = F_t.cardinality();           // used for includes/excludes
-      uint64_t cF_and_R = (R ? F_t.and_cardinality(*R) : 0);
-  
-      // cF_C
-      uint64_t cF_C = 0;
-      switch (filt) {
-        case CiterFilter::OnlyUS:
-        case CiterFilter::OnlyCN:
-        case CiterFilter::OnlyEU:
-          cF_C = cF_and_R;                         // |F_t ∩ R|
-          break;
-        case CiterFilter::ExcludeUS:
-        case CiterFilter::ExcludeCN:
-        case CiterFilter::ExcludeEU:
-          cF_C = cF - cF_and_R;                    // |F_t| - |F_t ∩ R|
-          break;
-        default:
-          cF_C = cF;                               // no filter
-      }
-  
-          // Precompute common values
-    uint64_t cFB_all = F_t.and_cardinality(*B_any);          // |F_t ∩ B_any|
-    uint64_t bwin_all = B_any->and_cardinality(*W_t);        // |B_any ∩ W_t|
-    
-    // Compute filtered cardinalities
-    uint64_t cFB_C = 0;
-    uint64_t bwin_C = 0;
-    
-    if (!R) {
-        // No filter case
+    if (!region) {
+        // No filter: compute unfiltered totals only here
+        const uint64_t cFB_all = F_t.and_cardinality(*B_any_ptr);
+        const uint64_t bwin_all = B_any_ptr->and_cardinality(*W_t_ptr);
+        cF_C = cF;
         cFB_C = cFB_all;
         bwin_C = bwin_all;
     } else {
-        // Build B_any_R ONCE and reuse for both computations
-        // TODO: If this shows up in profiling, cache (focal_id, region) -> B_any_R
-        Roaring B_any_R = *B_any & *R;                       // materialize intersection
-        uint64_t cFB_R = F_t.and_cardinality(B_any_R);       // |F_t ∩ B_any ∩ R|
-        uint64_t bwin_R = B_any_R.and_cardinality(*W_t);     // |B_any ∩ R ∩ W_t|
+        // Region present: Build small intermediates
+        Roaring F_R = F_t & *region;    // Small: F_t ∩ R
+        Roaring W_R = *W_t_ptr & *region; // Small: W_t ∩ R  
         
-        bool include = (filt == CiterFilter::OnlyUS || 
-                       filt == CiterFilter::OnlyCN || 
-                       filt == CiterFilter::OnlyEU);
+        // FAST PATH 2: Empty region overlap
+        if (F_R.isEmpty() && W_R.isEmpty() && include_region) {
+            return return_nan();  // Empty filtered i-set
+        }
         
-        if (include) {
-            cFB_C = cFB_R;                                   // include-only
+        const uint64_t cF_R = F_R.cardinality();    // |F_t ∩ R|
+        const uint64_t cFB_R  = (cF_R ? B_any_ptr->and_cardinality(F_R) : 0);   // |F_t ∩ B_any ∩ R|
+        const uint64_t bwin_R = B_any_ptr->and_cardinality(W_R);   // |B_any ∩ W_t ∩ R|
+        
+        if (include_region) {
+            // Include only papers in region (OnlyUS, OnlyCN, OnlyEU)
+            cF_C = cF_R;
+            cFB_C = cFB_R;
             bwin_C = bwin_R;
         } else {
-            cFB_C = cFB_all - cFB_R;                        // exclude
+            // Exclude papers in region (ExcludeUS, ExcludeCN, ExcludeEU)
+            // Use complement in counts, not complement bitmaps
+            const uint64_t cFB_all  = F_t.and_cardinality(*B_any_ptr);
+            const uint64_t bwin_all = B_any_ptr->and_cardinality(*W_t_ptr);
+            cF_C   = cF - cF_R;
+            cFB_C  = cFB_all - cFB_R;
             bwin_C = bwin_all - bwin_R;
+            #ifndef NDEBUG
+                assert(cFB_all <= cF);
+            #endif
         }
+        
+        // Debug assertions (only in debug builds)
+        #ifndef NDEBUG
+            assert(cFB_C <= cF_C);       // |F∩B| ≤ |F|
+        #endif
     }
-  
-      // Denominator and return
-      uint64_t denom = cF_C + bwin_C - cFB_C;
-      if (!denom) return 0.0;
-      double num = double(cF_C) - 2.0*double(cFB_C);
-      return num / double(denom);
-  }
+    
+    // Final CD-index calculation
+    // Denominator: |F_t ∪ B_t| = |F_t| + |B_any ∩ W_t| - |F_t ∩ B_any|
+    const uint64_t denom = cF_C + bwin_C - cFB_C;
+    if (denom == 0) return return_nan();
+    
+    ++g_benchmark.n;  // Count successful computation
+    
+    // Numerator: |F_t| - 2*|F_t ∩ B_any|
+    const double numerator = static_cast<double>(cF_C) - 2.0 * static_cast<double>(cFB_C);
+    return numerator / static_cast<double>(denom);
+}
+
+double Graph::cdindex_filtered(VertexId fid, time_delta_t dt, CiterFilter filt) {
+    // Delegate to unified core with appropriate region filter
+    const auto* eg = dynamic_cast<const EnhancedGraph*>(this);
+    const Roaring* region = eg ? eg->region_bitmap_for(filt) : nullptr;
+    
+    const bool include_region = (filt == CiterFilter::OnlyUS || 
+                                 filt == CiterFilter::OnlyCN || 
+                                 filt == CiterFilter::OnlyEU);
+    
+    return cdindex_core(fid, dt, region, include_region);
+}
   
 size_t Graph::iindex(VertexId focal_id, time_delta_t dt) {
     auto fit = vertices_.find(focal_id);
     if (fit == vertices_.end()) return 0;
-    
-    Vertex* focal = fit->second;
-    timestamp_t ft = focal->time;
-    
-    // Count papers that cite the focal paper within time window (legacy: no lower bound, ≤ f.time+dt)
-    size_t count = 0;
-    auto incoming_it = incoming_edges_.find(focal_id);
-    if (incoming_it != incoming_edges_.end()) {
-        for (auto* citer : incoming_it->second) {
-            if (citer->time <= ft + dt) {  // Legacy behavior: no lower bound
-                count++;
-            }
-        }
+
+    const timestamp_t ft = fit->second->time;
+    const auto it = incoming_edges_.find(focal_id);
+    if (it == incoming_edges_.end() || it->second.empty()) return 0;
+
+    // Legacy behavior: no lower bound; count citer->time <= ft+dt
+    if (incoming_edges_sorted_by_time_) {
+        const auto& v = it->second;
+        const auto ub = std::upper_bound(
+            v.begin(), v.end(), ft + dt,
+            [](timestamp_t t, const Vertex* x) { return t < x->time; });
+        return static_cast<size_t>(ub - v.begin());
     }
+
+    // Fallback: linear scan
+    size_t count = 0;
+    for (const Vertex* citer : it->second) if (citer->time <= ft + dt) ++count;
     return count;
 }
 
 double Graph::mcdindex(VertexId focal_id, time_delta_t dt) {
-    double cdindex_value = cdindex(focal_id, dt);
-    size_t iindex_value = iindex(focal_id, dt);
-    return cdindex_value * iindex_value;
+    const double cd = cdindex(focal_id, dt);
+    const size_t ii = iindex(focal_id, dt);
+    if (ii == 0) return return_nan();
+    return cd * static_cast<double>(ii);
 }
 
 size_t Graph::in_degree(VertexId id) const {
@@ -723,6 +726,16 @@ void EnhancedGraph::add_vertices_from_arrow(const std::shared_ptr<arrow::Table>&
         }
         batch = *next_batch;
         if (!batch) break;
+        // Optional UID column (string) to build internal UID→id map
+        std::shared_ptr<arrow::Array> uid_col = batch->GetColumnByName("UID");
+        std::shared_ptr<arrow::StringArray> uid_str;
+        std::shared_ptr<arrow::LargeStringArray> uid_lstr;
+        if (uid_col) {
+            if (uid_col->type()->id() == arrow::Type::STRING)
+                uid_str = std::static_pointer_cast<arrow::StringArray>(uid_col);
+            else if (uid_col->type()->id() == arrow::Type::LARGE_STRING)
+                uid_lstr = std::static_pointer_cast<arrow::LargeStringArray>(uid_col);
+        }
         // Handle flexible ID types: UINT32, INT64, INT32
         auto id_col = batch->GetColumnByName("paper_id");
         std::shared_ptr<arrow::UInt32Array> ids32;
@@ -778,6 +791,12 @@ void EnhancedGraph::add_vertices_from_arrow(const std::shared_ptr<arrow::Table>&
                 vid = ids32->Value(i);
             }
             add_vertex(vid, t);
+            // If UID present, remember mapping
+            if (uid_str && !uid_str->IsNull(i)) {
+                uid2id_.emplace(uid_str->GetString(i), vid);
+            } else if (uid_lstr && !uid_lstr->IsNull(i)) {
+                uid2id_.emplace(uid_lstr->GetString(i), vid);
+            }
         }
     }
 }
@@ -844,32 +863,32 @@ void EnhancedGraph::add_edges_from_arrow(const std::shared_ptr<arrow::Table>& ta
     }
 }
 
-void EnhancedGraph::evict_lru_cache_entry() {
-    // Remove the least recently used entry (back of the list)
-    if (!cache_lru_order_.empty()) {
-        std::string lru_key = cache_lru_order_.back();
-        cache_lru_order_.pop_back();
-        cache_lru_map_.erase(lru_key);
-        filter_bitmap_cache_.erase(lru_key);
-    }
-}
+// void EnhancedGraph::evict_lru_cache_entry() {
+//     // Remove the least recently used entry (back of the list)
+//     if (!cache_lru_order_.empty()) {
+//         std::string lru_key = cache_lru_order_.back();
+//         cache_lru_order_.pop_back();
+//         cache_lru_map_.erase(lru_key);
+//         filter_bitmap_cache_.erase(lru_key);
+//     }
+// }
 
-void EnhancedGraph::update_cache_access(const std::string& key) {
-    auto it = cache_lru_map_.find(key);
-    if (it != cache_lru_map_.end()) {
-        // Move to front (most recently used)
-        cache_lru_order_.erase(it->second);
-    }
-    cache_lru_order_.push_front(key);
-    cache_lru_map_[key] = cache_lru_order_.begin();
-}
+// void EnhancedGraph::update_cache_access(const std::string& key) {
+//     auto it = cache_lru_map_.find(key);
+//     if (it != cache_lru_map_.end()) {
+//         // Move to front (most recently used)
+//         cache_lru_order_.erase(it->second);
+//     }
+//     cache_lru_order_.push_front(key);
+//     cache_lru_map_[key] = cache_lru_order_.begin();
+// }
 
-void EnhancedGraph::clear_filter_cache() {
-    std::lock_guard<std::mutex> l(filter_mutex_);
-    filter_bitmap_cache_.clear();
-    cache_lru_order_.clear();
-    cache_lru_map_.clear();
-}
+// void EnhancedGraph::clear_filter_cache() {
+//     std::lock_guard<std::mutex> l(filter_mutex_);
+//     filter_bitmap_cache_.clear();
+//     cache_lru_order_.clear();
+//     cache_lru_map_.clear();
+// }
 
 void EnhancedGraph::clear_predecessor_cache() {
     std::lock_guard<std::mutex> l(predecessor_mutex_);
@@ -880,82 +899,82 @@ void EnhancedGraph::clear_predecessor_cache() {
     bany_lru_.clear();
 }
 
-const Roaring& EnhancedGraph::get_cached_predecessor_bitmap_ref(VertexId pred_id, timestamp_t focal_time, time_delta_t dt) {
+std::shared_ptr<const Roaring> EnhancedGraph::get_cached_predecessor_bitmap_sp(VertexId pred_id, timestamp_t focal_time, time_delta_t dt) {
     std::lock_guard<std::mutex> l(predecessor_mutex_);
     
     // Use composite key including focal_time and dt for correct caching
     PredWinKey key{pred_id, focal_time, dt};
     ++g_benchmark.hf_all;  // Track cache access
-    if (auto p = predecessor_bitmap_cache_.get_ptr(key)) {
+    if (auto sp = predecessor_bitmap_cache_.get_copy(key)) {
         ++g_benchmark.hf_hit;  // Track cache hit
-        return *p;  // Cache hit - return reference, no copy!
+        return sp;  // Cache hit - return shared_ptr copy
     }
     
     // Cache miss - compute and store
-            Roaring result;
+    auto result = std::make_shared<Roaring>();
     auto edge_it = incoming_edges_.find(pred_id);
     if (edge_it != incoming_edges_.end()) {
-        result = incoming_edges_sorted_by_time_ ? 
-                 build_ref_bitmap_sorted(edge_it->second, focal_time, dt) :
-                 build_ref_bitmap(edge_it->second, focal_time, dt);
+        *result = incoming_edges_sorted_by_time_ ? 
+                  build_ref_bitmap_sorted(edge_it->second, focal_time, dt) :
+                  build_ref_bitmap(edge_it->second, focal_time, dt);
     }
     
-    // LRU handles eviction automatically, return reference to stored bitmap
-    return *predecessor_bitmap_cache_.put_and_get_ptr(key, std::move(result));
+    // LRU handles eviction automatically, return shared_ptr copy
+    return predecessor_bitmap_cache_.put_and_get_copy(key, result);
 }
         
-const Roaring& EnhancedGraph::get_cached_predecessor_bitmap_unfiltered_ref(VertexId pred_id) {
+std::shared_ptr<const Roaring> EnhancedGraph::get_cached_predecessor_bitmap_unfiltered_sp(VertexId pred_id) {
     std::lock_guard<std::mutex> l(predecessor_mutex_);
     ++g_benchmark.hu_all;  // Track cache access
-    if (auto p = predecessor_bitmap_cache_unfiltered_.get_ptr(pred_id)) {
+    if (auto sp = predecessor_bitmap_cache_unfiltered_.get_copy(pred_id)) {
         ++g_benchmark.hu_hit;  // Track cache hit
-        return *p;  // Cache hit - return reference, no copy!
+        return sp;  // Cache hit - return shared_ptr copy
     }
     
-    Roaring result;
+    auto result = std::make_shared<Roaring>();
     auto in_it = incoming_edges_.find(pred_id);
     if (in_it != incoming_edges_.end()) {
-        for (Vertex* citer : in_it->second) result.add(citer->id);
+        for (const Vertex* citer : in_it->second) result->add(citer->id);
     }
     
-    // LRU handles eviction automatically, return reference to stored bitmap
-    return *predecessor_bitmap_cache_unfiltered_.put_and_get_ptr(pred_id, std::move(result));
+    // LRU handles eviction automatically, return shared_ptr copy
+    return predecessor_bitmap_cache_unfiltered_.put_and_get_copy(pred_id, result);
 }
 
-const Roaring& EnhancedGraph::get_bany_for_focal(VertexId fid) {
-    std::lock_guard<std::mutex> lk(bany_mu_);
+std::shared_ptr<const Roaring> EnhancedGraph::get_bany_for_focal_sp(VertexId fid) const {
+    std::lock_guard<std::mutex> lk(const_cast<std::mutex&>(bany_mu_));
     ++g_benchmark.hb_all;  // Track cache access
-    if (auto p = bany_lru_.get_ptr(fid)) {
+    if (auto sp = const_cast<EnhancedGraph*>(this)->bany_lru_.get_copy(fid)) {
         ++g_benchmark.hb_hit;  // Track cache hit
-        return *p;  // Cache hit - return reference, no copy!
+        return sp;  // Cache hit - return shared_ptr copy
     }
     
     // Build B_any = union of all unfiltered citers of focal's predecessors
-    Roaring r;
+    auto r = std::make_shared<Roaring>();
     auto focal_it = vertices_.find(fid);
     if (focal_it != vertices_.end()) {
-        for (auto* e : focal_it->second->outgoing_edges) {
+        for (const auto* e : focal_it->second->outgoing_edges) {
             auto in_it = incoming_edges_.find(e->target->id);
             if (in_it != incoming_edges_.end())
-                for (Vertex* citer : in_it->second) r.add(citer->id);
+                for (const Vertex* citer : in_it->second) r->add(citer->id);
         }
     }
     
     // Optimize large B_any bitmaps as requested
-    r.runOptimize();
+    r->runOptimize();
     
-    // LRU handles eviction automatically, return reference to stored bitmap
-    return *bany_lru_.put_and_get_ptr(fid, std::move(r));
+    // LRU handles eviction automatically, return shared_ptr copy
+    return const_cast<EnhancedGraph*>(this)->bany_lru_.put_and_get_copy(fid, r);
 }
 
-const Roaring& EnhancedGraph::get_window_bitmap(timestamp_t ft, time_delta_t dt) {
-    std::lock_guard<std::mutex> lk(timewin_mu_);
+std::shared_ptr<const Roaring> EnhancedGraph::get_window_bitmap_sp(timestamp_t ft, time_delta_t dt) const {
+    std::lock_guard<std::mutex> lk(const_cast<std::mutex&>(timewin_mu_));
     ++g_benchmark.hb_all;  // Track time window cache access
     
     TimeWinKey key{ft, dt};
-    if (auto p = timewin_lru_.get_ptr(key)) {
+    if (auto sp = const_cast<EnhancedGraph*>(this)->timewin_lru_.get_copy(key)) {
         ++g_benchmark.hb_hit;  // Track cache hit
-        return *p;  // Cache hit - return reference, no copy!
+        return sp;  // Cache hit - return shared_ptr copy
     }
 
     // Build W_t by unioning only the needed years (no giant prefix arrays!)
@@ -973,36 +992,69 @@ const Roaring& EnhancedGraph::get_window_bitmap(timestamp_t ft, time_delta_t dt)
     int start_year = static_cast<int>(std::max(MIN_YEAR, std::min(MAX_YEAR, start_year_64)));
     int end_year = static_cast<int>(std::max(MIN_YEAR, std::min(MAX_YEAR, end_year_64)));
     
-    Roaring W = properties.get_window_bitmap_by_union("year", start_year, end_year);
+    auto W = std::make_shared<Roaring>(properties.get_window_bitmap_by_union("year", start_year, end_year));
     
-    // LRU handles eviction automatically, return reference to stored bitmap
-    return *timewin_lru_.put_and_get_ptr(key, std::move(W));
+    // LRU handles eviction automatically, return shared_ptr copy
+    return const_cast<EnhancedGraph*>(this)->timewin_lru_.put_and_get_copy(key, W);
 }
 
 
 
 void EnhancedGraph::build_region_bitmaps_from(PropertyStore& props,
     const CountryLists& lists) {
-// lists.us = {"United States"}; lists.cn = {"China", "Hong Kong", ...}
-// lists.eu = {"France","Germany",...} from country_list.tsv
-
-auto bm_from = [&](const std::vector<int>& codes) {
-return props.get_combined_bitmap("country", codes);
-};
-regions_.us = bm_from(lists.us_codes);
-regions_.cn = bm_from(lists.cn_codes);
-regions_.eu = bm_from(lists.eu_codes);
-regions_.us.runOptimize(); regions_.cn.runOptimize(); regions_.eu.runOptimize();
+    regions_.us = props.get_combined_bitmap_str("country", lists.us_names);
+    regions_.cn = props.get_combined_bitmap_str("country", lists.cn_names);
+    regions_.eu = props.get_combined_bitmap_str("country", lists.eu_names);
+    regions_.us.runOptimize(); regions_.cn.runOptimize(); regions_.eu.runOptimize();
 }
 
-const Roaring* EnhancedGraph::region_bitmap_for(CiterFilter f) {
-switch (f) {
-case CiterFilter::OnlyUS:
-case CiterFilter::ExcludeUS: return &regions_.us;
-case CiterFilter::OnlyCN:
-case CiterFilter::ExcludeCN: return &regions_.cn;
-case CiterFilter::OnlyEU:
-case CiterFilter::ExcludeEU: return &regions_.eu;
-default: return nullptr;
+void EnhancedGraph::set_country_lists(CountryLists lists) {
+    country_lists_ = std::move(lists);
 }
+
+const Roaring* EnhancedGraph::region_bitmap_for(CiterFilter f) const {
+    std::call_once(regions_once_, [&]{
+        // Build on first use, thread-safe
+        // Note: PropertyStore is immutable at query time here
+        const_cast<EnhancedGraph*>(this)->build_region_bitmaps_from(
+            const_cast<PropertyStore&>(this->properties), country_lists_);
+    });
+    switch (f) {
+        case CiterFilter::OnlyUS:
+        case CiterFilter::ExcludeUS: return &regions_.us;
+        case CiterFilter::OnlyCN:
+        case CiterFilter::ExcludeCN: return &regions_.cn;
+        case CiterFilter::OnlyEU:
+        case CiterFilter::ExcludeEU: return &regions_.eu;
+        default: return nullptr;
+    }
+}
+
+arrow::Status EnhancedGraph::ingest_countries_from_parquet(const std::shared_ptr<arrow::Table>& table,
+                                                           const std::string& uid_col,
+                                                           const std::string& country_col) {
+    // If the parquet has numeric paper_id instead of UID, we can do a fast path:
+    auto pid_col = table->GetColumnByName("paper_id");
+    if (pid_col && pid_col->type()->id() == arrow::Type::UINT32) {
+        // Wrap into a two-column table like ingest_arrow expects
+        // But we want direct build: emulate uid2id via paper_id as decimal string keys (or add new direct variant)
+        // Simpler: build a temporary uid2id' where key is std::to_string(paper_id)
+        std::unordered_map<std::string, VertexId> pid_map;
+        arrow::TableBatchReader reader(*table);
+        reader.set_chunksize(get_ingest_chunk_size());
+        std::shared_ptr<arrow::RecordBatch> batch;
+        while (true) {
+            auto rs = reader.Next();
+            if (!rs.ok()) { return rs.status(); }
+            batch = *rs;
+            if (!batch) break;
+            auto pid = std::static_pointer_cast<arrow::UInt32Array>(batch->GetColumnByName("paper_id"));
+            for (int64_t i=0;i<batch->num_rows();++i) if (!pid->IsNull(i)) {
+                pid_map.emplace(std::to_string(pid->Value(i)), pid->Value(i));
+            }
+        }
+        return properties.ingest_country_direct(table, pid_map, "paper_id", country_col);
+    }
+    // Normal path: use real UID→id mapping captured during vertex load
+    return properties.ingest_country_direct(table, uid2id_, uid_col, country_col);
 }

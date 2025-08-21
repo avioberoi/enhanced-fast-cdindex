@@ -2,8 +2,8 @@
 """
 Enhanced CD-Index Validation Script
 
-Validates that the new enhanced CD-index implementation produces identical
-scores to the previously computed results from compute_cd_one.py.
+Validates that the new enhanced CD-index implementation against
+scores previously computed results
 
 This script:
 1. Loads the full graph from cached parquet data  
@@ -639,18 +639,23 @@ class EnhancedValidation:
         all_files = [f for f in os.listdir(self.scores_dir) if f.endswith('.csv.gz')]
         all_files.sort()
         
-        # SKIP ALREADY VALIDATED FILES: Skip first 20 files (already validated)
+        # TESTING: Process from beginning for production-grade validation test
         total_available = len(all_files)
-        skip_first_n = 0  # Skip files that are already validated
+        skip_first_n = 0  # No skipping for testing
         
-        if len(all_files) > skip_first_n:
+        if len(all_files) > skip_first_n and skip_first_n > 0:
             all_files = all_files[skip_first_n:]
             self.logger.info(f"Skipped first {skip_first_n} files (already validated)")
+        else:
+            self.logger.info(f"Processing from beginning - no files skipped")
         
-        # Limit to next N files if max_files is specified  
+        # Limit to first N files if max_files is specified  
         if self.max_files and self.max_files > 0:
             all_files = all_files[:self.max_files]
-            self.logger.info(f"Limited to next {self.max_files} files (files {skip_first_n+1}-{skip_first_n+len(all_files)}) out of {total_available} total")
+            if skip_first_n > 0:
+                self.logger.info(f"Limited to next {self.max_files} files (files {skip_first_n+1}-{skip_first_n+len(all_files)}) out of {total_available} total")
+            else:
+                self.logger.info(f"Limited to first {self.max_files} files (files 1-{len(all_files)}) out of {total_available} total")
         
         # Partition files across multiple jobs with proper load balancing
         files_per_part = math.ceil(len(all_files) / self.total_parts)
@@ -667,8 +672,8 @@ class EnhancedValidation:
         self.logger.info(f"Total files after skip+limit: {len(all_files)}, this part: {len(selected_files)}")
         if selected_files:
             # Show actual file numbers in the original sequence
-            first_file_num = skip_first_n + 1 + (self.part_id * files_per_part)
-            last_file_num = skip_first_n + (start_idx + len(selected_files))
+            first_file_num = skip_first_n + 1 + start_idx
+            last_file_num = skip_first_n + start_idx + len(selected_files)
             self.logger.info(f"Processing files #{first_file_num}-{last_file_num}: {selected_files[0]} to {selected_files[-1]}")
         else:
             self.logger.info("No files assigned to this part")

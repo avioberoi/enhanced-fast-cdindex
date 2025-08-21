@@ -1,8 +1,4 @@
-try:
-  from fast_cdindex.cdindex import *
-except ImportError:
-  from fast_cdindex import *
-
+# Import only time_utilities to avoid conflicts with enhanced module
 try:
   from fast_cdindex.time_utilities import *
 except ImportError:

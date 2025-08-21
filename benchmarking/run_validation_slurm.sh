@@ -9,8 +9,8 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=48
 #SBATCH --mem=180GB
-#SBATCH --time=36:00:00
-#SBATCH --array=0-9
+#SBATCH --time=12:00:00
+# Single job for testing (no array)
 
 set -e
 
@@ -75,18 +75,15 @@ fi
 # Validation parameters
 DATA_CACHE_DIR="/project/jevans/tip/disruption/code_wos_2023/benchmarking/data_cache"
 SCORES_DIR="/project/jevans/tip/disruption/code_wos_2023/WoS_data/scores_all"
-TOTAL_PARTS=10   # Match array size so each job processes 200/10=20 files
-PART_ID=$SLURM_ARRAY_TASK_ID
-# Fallback when no array context is provided
-if [ -z "$PART_ID" ]; then
-  PART_ID=0
-fi
+TOTAL_PARTS=200  # Process 1 out of 200 total parts for testing
+PART_ID=0        # Process first part (part 0 out of 200)
+# Note: This will process approximately 1 file out of 200 total files
 
 # Debug mode flags (override by env if needed)
 USE_TSV_BUILD=${USE_TSV_BUILD:-1}           # 1 = build graph from TSV like compute_cd_one.py
 LIMIT_PAPERS=${LIMIT_PAPERS:-}             # full validation by default, can override via env
 QUICK_BENCHMARK=${QUICK_BENCHMARK:-0}       # 1 = enable quick micro-benchmark mode (1000 papers)
-MAX_FILES=${MAX_FILES:-50}                  # Limit to next 50 files 
+MAX_FILES=${MAX_FILES:-10}                  # Limit to 10 files for testing 
 WOS_ROOT=${WOS_ROOT:-/project/jevans/tip/disruption/code_wos_2023/WoS_data}
 TSV_VERTEX_DIR=${TSV_VERTEX_DIR:-$WOS_ROOT/paper_years_all.tsv}
 TSV_EDGE_DIR=${TSV_EDGE_DIR:-$WOS_ROOT/edges_all.tsv}
@@ -211,7 +208,7 @@ VALIDATION_CMD="$VALIDATION_CMD --validate-cdindex-only"
 
 # Limit number of files to process
 if [ -n "$MAX_FILES" ] && [ "$MAX_FILES" -gt 0 ]; then
-  echo "Processing next $MAX_FILES files (skipping first 20 already validated, processing files 21-120 out of 200 total)"
+  echo "Testing production-grade improvements: processing $MAX_FILES files, part $((PART_ID+1))/$TOTAL_PARTS"
   VALIDATION_CMD="$VALIDATION_CMD --max-files $MAX_FILES"
 fi
 
