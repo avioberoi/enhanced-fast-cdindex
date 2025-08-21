@@ -146,21 +146,42 @@ class EnhancedGraph:
         """Prepare graph for efficient searching by sorting edges."""
         self._graph.prepare_for_searching()
     
-    def build_region_bitmaps(self, us_names: list, cn_names: list, eu_names: list):
-        """
-        Build region bitmaps for filtering CD-index computations (by COUNTRY NAMES)
+    # def build_region_bitmaps(self, us_names: list, cn_names: list, eu_names: list):
+    #     """
+    #     Build region bitmaps for filtering CD-index computations (by COUNTRY NAMES)
         
-        Note: Names must match normalized lowercase strings in parquet
+    #     Note: Names must match normalized lowercase strings in parquet
         
-        Args:
-            us_names: list[str] names for US (e.g. ["usa","united states"])
-            cn_names: list[str] names for CN/HK/Macau variants
-            eu_names: list[str] names for EU countries
+    #     Args:
+    #         us_names: list[str] names for US (e.g. ["usa","united states"])
+    #         cn_names: list[str] names for CN/HK/Macau variants
+    #         eu_names: list[str] names for EU countries
             
-        Note: Names must match normalized lowercase strings in parquet
-        """
-        self._graph.build_region_bitmaps(us_names, cn_names, eu_names)
+    #     Note: Names must match normalized lowercase strings in parquet
+    #     """
+    #     self._graph.build_region_bitmaps(us_names, cn_names, eu_names)
     
+    def set_country_lists(self, us_names: list, cn_names: list, eu_names: list):
+        """Register normalized country-name lists that define US/CN/EU."""
+        self._graph.set_country_lists(us_names, cn_names, eu_names)
+        
+    def ingest_countries_from_parquet(self, table: pa.Table, uid_col: str = "UID", country_col: str = "country"):
+        """Build region bitmaps directly from a UID,country parquet (single pass)."""
+        self._graph.ingest_countries_from_parquet(table, uid_col, country_col)
+
+    def save_region_bitmaps(self, dir_path: str):
+        self._graph.save_region_bitmaps(dir_path)
+
+    def load_region_bitmaps(self, dir_path: str):
+        self._graph.load_region_bitmaps(dir_path)
+
+    # ---------- Year bitmaps persistence (optional) ----------
+    def save_year_bitmaps(self, dir_path: str):
+        self._graph.save_year_bitmaps(dir_path)
+
+    def load_year_bitmaps(self, dir_path: str):
+        self._graph.load_year_bitmaps(dir_path)
+
     def ingest_countries_from_parquet(self, table: pa.Table, uid_col: str = "UID", country_col: str = "country"):
         """
         Ingest normalized country strings and build 'country' bitmaps directly.
@@ -179,14 +200,14 @@ class EnhancedGraph:
     def get_benchmark_stats(self) -> dict:
         """Get micro-benchmark statistics as a dictionary."""
         bench = _cdindex.g_benchmark
-        total_time = bench.t1_ms + bench.t2_ms + bench.t3_ms
+        total_time = bench.t1 + bench.t2 + bench.t3
         return {
-            'computations': bench.computations,
-            't1_ms': bench.t1_ms,  # F_t build time
-            't2_ms': bench.t2_ms,  # B_t build time  
-            't3_ms': bench.t3_ms,  # Cardinality ops time
+            'computations': bench.n,
+            't1_ms': bench.t1,  # F_t build time
+            't2_ms': bench.t2,  # B_t build time
+            't3_ms': bench.t3,  # Cardinality ops time
             'total_ms': total_time,
-            'throughput_per_sec': bench.computations / (total_time / 1000.0) if total_time > 0 else 0,
+            'throughput_per_sec': bench.n / (total_time / 1000.0) if total_time > 0 else 0,
             'hf_hit_rate': bench.hf_hit / bench.hf_all if bench.hf_all > 0 else 0,
             'hb_hit_rate': bench.hb_hit / bench.hb_all if bench.hb_all > 0 else 0,
             'hu_hit_rate': bench.hu_hit / bench.hu_all if bench.hu_all > 0 else 0,

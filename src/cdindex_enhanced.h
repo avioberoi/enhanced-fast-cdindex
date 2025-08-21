@@ -13,6 +13,7 @@
 #include <type_traits>
 #include <chrono>
 #include <string>
+#include <absl/strings/string_view.h>
 
 using VertexId = uint32_t;
 using timestamp_t = int64_t;
@@ -247,6 +248,8 @@ public:
                                       const std::string& uid_col = "UID",
                                       const std::string& country_col = "country");
   void clear();
+  bool save_bitmaps(const std::string& prop, const std::string& dir) const;
+  bool load_bitmaps(const std::string& prop, const std::string& dir);
 private:
     // DISABLED: void build_prefix_or_arrays();  // Causes memory explosion - removed
     
@@ -314,7 +317,7 @@ public:
   struct CountryLists {
     std::vector<std::string> us_names, cn_names, eu_names; // normalized lowercase
   };
-  void set_country_lists(CountryLists lists);
+//   void set_country_lists(CountryLists lists);
   void build_region_bitmaps_from(PropertyStore& props, const CountryLists& lists);
   
   // Window bitmap optimization - safe shared_ptr access
@@ -323,10 +326,20 @@ public:
   // Returns nullptr if filter == None. Thread-safe; lazily builds region bitmaps on first call
   [[nodiscard]] const Roaring* region_bitmap_for(CiterFilter filter) const;
 
-  // Ingest country parquet directly (uses internal UID→id map)
+  // region-only ingest & persistence
   arrow::Status ingest_countries_from_parquet(const std::shared_ptr<arrow::Table>& table,
-                                              const std::string& uid_col = "UID",
-                                              const std::string& country_col = "country");
+                                              const std::string& uid_col,
+                                              const std::string& country_col);
+  void set_country_lists(CountryLists lists);
+  void set_country_lists_by_names(const std::vector<std::string>& us,
+                                  const std::vector<std::string>& cn,
+                                  const std::vector<std::string>& eu);
+  bool save_region_bitmaps(const std::string& dir) const;
+  bool load_region_bitmaps(const std::string& dir);
+  // optional: year bitmap persistence
+  bool save_year_bitmaps(const std::string& dir) const { return properties.save_bitmaps("year", dir); }
+  bool load_year_bitmaps(const std::string& dir)       { return properties.load_bitmaps("year", dir); }
+  void clear_uid_map();
 
 private:
   // Predecessor bitmap caching with safe shared ownership
@@ -346,9 +359,15 @@ private:
   mutable RegionSets regions_;
   mutable std::once_flag regions_once_;
   CountryLists country_lists_;  // set via set_country_lists()
-  // Internal UID→id map (built when vertices provide UID)
-  std::unordered_map<std::string, VertexId> uid2id_;
+  bool regions_prebuilt_ = false;  // set true if we ingest regions directly (no PropertyStore build)
 
+  // Internal UID→id map (built when vertices provide UID)
+//   std::unordered_map<std::string, VertexId> uid2id_;
+  // UID->ID mapping (lazy, zero-copy via views)
+  // Keys point into Arrow buffers we pin in uid_owner_chunks_
+  absl::flat_hash_map<absl::string_view, VertexId> uid2id_;
+  std::vector<std::shared_ptr<arrow::Array>> uid_owner_chunks_;
+  bool uid_map_ready_ = false;
 //   std::mutex filter_mutex_;
 //   std::unordered_map<std::string, Roaring> filter_bitmap_cache_;
 //   std::list<std::string> cache_lru_order_;  // LRU order: most recent at front

@@ -49,7 +49,13 @@ PYBIND11_MODULE(_cdindex, m) {
             if (!status.ok()) throw std::runtime_error(status.message());
         })
         .def("build_indexes", &PropertyStore::build_indexes)
-        .def("clear", &PropertyStore::clear);
+        .def("clear", &PropertyStore::clear)
+        .def("save_year_bitmaps", [](PropertyStore& self, const std::string& dir) {
+            if (!self.save_bitmaps("year", dir)) throw std::runtime_error("save_year_bitmaps failed");
+        })
+        .def("load_year_bitmaps", [](PropertyStore& self, const std::string& dir) {
+            if (!self.load_bitmaps("year", dir)) throw std::runtime_error("load_year_bitmaps failed");
+        });
 
     // EnhancedGraph inherits from Graph
     py::class_<EnhancedGraph, Graph>(m, "EnhancedGraph")
@@ -84,18 +90,55 @@ PYBIND11_MODULE(_cdindex, m) {
         .def("out_edges", &EnhancedGraph::out_edges, py::arg("paper_id"))
         .def("get_timestamp", &EnhancedGraph::get_timestamp, py::arg("paper_id"))
         .def("prepare_for_searching", &EnhancedGraph::prepare_for_searching)
+
+        // region build (names) and persistence
+        .def("set_country_lists", [](EnhancedGraph& self,
+                                     const std::vector<std::string>& us_names,
+                                     const std::vector<std::string>& cn_names,
+                                     const std::vector<std::string>& eu_names) {
+            self.set_country_lists_by_names(us_names, cn_names, eu_names);
+        }, py::arg("us_names"), py::arg("cn_names"), py::arg("eu_names"))
+
+        .def("ingest_countries_from_parquet", [](EnhancedGraph& self,
+                                                 py::object table_obj,
+                                                 const std::string& uid_col,
+                                                 const std::string& country_col) {
+            PyObject* pobj = table_obj.ptr();
+            auto maybe_table = arrow::py::unwrap_table(pobj);
+            if (!maybe_table.ok()) throw std::runtime_error(maybe_table.status().message());
+            auto st = self.ingest_countries_from_parquet(*maybe_table, uid_col, country_col);
+            if (!st.ok()) throw std::runtime_error(st.message());
+        }, py::arg("table"), py::arg("uid_col")="UID", py::arg("country_col")="country")
+
+        .def("save_region_bitmaps", [](EnhancedGraph& self, const std::string& dir) {
+            if (!self.save_region_bitmaps(dir)) throw std::runtime_error("save_region_bitmaps failed");
+        })
+
+        .def("load_region_bitmaps", [](EnhancedGraph& self, const std::string& dir) {
+            if (!self.load_region_bitmaps(dir)) throw std::runtime_error("load_region_bitmaps failed");
+        })
+
+        // optional: year bitmaps persistence at graph-level (delegates to PropertyStore)
+        .def("save_year_bitmaps", [](EnhancedGraph& self, const std::string& dir) {
+            if (!self.properties.save_bitmaps("year", dir)) throw std::runtime_error("save_year_bitmaps failed");
+        })
+
+        .def("load_year_bitmaps", [](EnhancedGraph& self, const std::string& dir) {
+            if (!self.properties.load_bitmaps("year", dir)) throw std::runtime_error("load_year_bitmaps failed");
+        })
+
         // Build region bitmaps from COUNTRY NAMES (strings), which matches the C++ impl
-        .def("build_region_bitmaps", [](EnhancedGraph &self,
-                                        const std::vector<std::string>& us_names,
-                                        const std::vector<std::string>& cn_names,
-                                        const std::vector<std::string>& eu_names) {
-            EnhancedGraph::CountryLists lists;
-            lists.us_names = us_names;
-            lists.cn_names = cn_names;
-            lists.eu_names = eu_names;
-            self.build_region_bitmaps_from(self.properties, lists);
-        }, py::arg("us_names"), py::arg("cn_names"), py::arg("eu_names"),
-        "Build region bitmaps from country NAMES for filtering (strings, lowercase).")
+        // .def("build_region_bitmaps", [](EnhancedGraph &self,
+        //                                 const std::vector<std::string>& us_names,
+        //                                 const std::vector<std::string>& cn_names,
+        //                                 const std::vector<std::string>& eu_names) {
+        //     EnhancedGraph::CountryLists lists;
+        //     lists.us_names = us_names;
+        //     lists.cn_names = cn_names;
+        //     lists.eu_names = eu_names;
+        //     self.build_region_bitmaps_from(self.properties, lists);
+        // }, py::arg("us_names"), py::arg("cn_names"), py::arg("eu_names"),
+        // "Build region bitmaps from country NAMES for filtering (strings, lowercase).")
 
         // Direct ingest of countries parquet (UID -> country strings)
         .def("ingest_countries_from_parquet",

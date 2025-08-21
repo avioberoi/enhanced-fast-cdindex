@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <unordered_set>
 #include <cctype>
+#include <unordered_set>
+#include <absl/strings/string_view.h>
 
 // Helper for returning NaN consistently
 static inline double return_nan() {
@@ -719,6 +721,8 @@ void EnhancedGraph::add_vertices_from_arrow(const std::shared_ptr<arrow::Table>&
     arrow::TableBatchReader reader(*table);
     reader.set_chunksize(get_ingest_chunk_size());
     std::shared_ptr<arrow::RecordBatch> batch;
+    const bool have_uid = (table->GetColumnByName("UID") != nullptr);
+    if (have_uid) uid2id_.reserve(static_cast<size_t>(table->num_rows()));
     while (true) {
         arrow::Result<std::shared_ptr<arrow::RecordBatch>> next_batch = reader.Next();
         if (!next_batch.ok()) {
@@ -731,10 +735,14 @@ void EnhancedGraph::add_vertices_from_arrow(const std::shared_ptr<arrow::Table>&
         std::shared_ptr<arrow::StringArray> uid_str;
         std::shared_ptr<arrow::LargeStringArray> uid_lstr;
         if (uid_col) {
-            if (uid_col->type()->id() == arrow::Type::STRING)
+            if (uid_col->type()->id() == arrow::Type::STRING){
                 uid_str = std::static_pointer_cast<arrow::StringArray>(uid_col);
-            else if (uid_col->type()->id() == arrow::Type::LARGE_STRING)
+                uid_owner_chunks_.push_back(uid_str);
+            }
+            else if (uid_col->type()->id() == arrow::Type::LARGE_STRING){
                 uid_lstr = std::static_pointer_cast<arrow::LargeStringArray>(uid_col);
+                uid_owner_chunks_.push_back(uid_lstr);
+            }
         }
         // Handle flexible ID types: UINT32, INT64, INT32
         auto id_col = batch->GetColumnByName("paper_id");
@@ -791,14 +799,21 @@ void EnhancedGraph::add_vertices_from_arrow(const std::shared_ptr<arrow::Table>&
                 vid = ids32->Value(i);
             }
             add_vertex(vid, t);
-            // If UID present, remember mapping
+            // If UID present, remember mapping (absl::string_view into Arrow buffer)
             if (uid_str && !uid_str->IsNull(i)) {
-                uid2id_.emplace(uid_str->GetString(i), vid);
+                const int32_t off = uid_str->value_offset(i);
+                const int32_t len = uid_str->value_length(i);
+                const char*   ptr = reinterpret_cast<const char*>(uid_str->value_data()->data()) + off;
+                uid2id_.emplace(absl::string_view(ptr, static_cast<size_t>(len)), vid);
             } else if (uid_lstr && !uid_lstr->IsNull(i)) {
-                uid2id_.emplace(uid_lstr->GetString(i), vid);
+                const int64_t off = uid_lstr->value_offset(i);
+                const int64_t len = uid_lstr->value_length(i);
+                const char*   ptr = reinterpret_cast<const char*>(uid_lstr->value_data()->data()) + off;
+                uid2id_.emplace(absl::string_view(ptr, static_cast<size_t>(len)), vid);
             }
         }
     }
+    uid_map_ready_ = !uid2id_.empty();
 }
 void EnhancedGraph::add_edges_from_arrow(const std::shared_ptr<arrow::Table>& table) {
     arrow::TableBatchReader reader(*table);
@@ -815,52 +830,107 @@ void EnhancedGraph::add_edges_from_arrow(const std::shared_ptr<arrow::Table>& ta
 
         auto source_col = batch->GetColumnByName("source_id");
         auto target_col = batch->GetColumnByName("target_id");
+
+        // UID path
+        auto source_uid_col = (!source_col ? batch->GetColumnByName("source_uid") : nullptr);
+        auto target_uid_col = (!target_col ? batch->GetColumnByName("target_uid") : nullptr);
+        if (!source_col && !source_uid_col) throw std::runtime_error("edges: missing source_id/source_uid");
+        if (!target_col && !target_uid_col) throw std::runtime_error("edges: missing target_id/target_uid");
+        
         // Handle flexible ID types: UINT32, INT64, INT32
         std::shared_ptr<arrow::UInt32Array> src_u32;
         std::shared_ptr<arrow::Int64Array> src_i64;
         std::shared_ptr<arrow::Int32Array> src_i32;
-        switch (source_col->type()->id()) {
-            case arrow::Type::UINT32:
-                src_u32 = std::static_pointer_cast<arrow::UInt32Array>(source_col);
-                break;
-            case arrow::Type::INT64:
-                src_i64 = std::static_pointer_cast<arrow::Int64Array>(source_col);
-                break;
-            case arrow::Type::INT32:
-                src_i32 = std::static_pointer_cast<arrow::Int32Array>(source_col);
-                break;
-            default:
-                throw std::runtime_error("Unsupported source_id column type " + source_col->type()->ToString());
-        }
-        std::shared_ptr<arrow::UInt32Array> tgt_u32;
-        std::shared_ptr<arrow::Int64Array> tgt_i64;
-        std::shared_ptr<arrow::Int32Array> tgt_i32;
-        switch (target_col->type()->id()) {
-            case arrow::Type::UINT32:
-                tgt_u32 = std::static_pointer_cast<arrow::UInt32Array>(target_col);
-                break;
-            case arrow::Type::INT64:
-                tgt_i64 = std::static_pointer_cast<arrow::Int64Array>(target_col);
-                break;
-            case arrow::Type::INT32:
-                tgt_i32 = std::static_pointer_cast<arrow::Int32Array>(target_col);
-                break;
-            default:
-                throw std::runtime_error("Unsupported target_id column type " + target_col->type()->ToString());
-        }
+        if (source_col && target_col) {
+            switch (source_col->type()->id()) {
+                case arrow::Type::UINT32:
+                    src_u32 = std::static_pointer_cast<arrow::UInt32Array>(source_col);
+                    break;
+                case arrow::Type::INT64:
+                    src_i64 = std::static_pointer_cast<arrow::Int64Array>(source_col);
+                    break;
+                case arrow::Type::INT32:
+                    src_i32 = std::static_pointer_cast<arrow::Int32Array>(source_col);
+                    break;
+                default:
+                    throw std::runtime_error("Unsupported source_id column type " + source_col->type()->ToString());
+            }
+            std::shared_ptr<arrow::UInt32Array> tgt_u32;
+            std::shared_ptr<arrow::Int64Array> tgt_i64;
+            std::shared_ptr<arrow::Int32Array> tgt_i32;
+            switch (target_col->type()->id()) {
+                case arrow::Type::UINT32:
+                    tgt_u32 = std::static_pointer_cast<arrow::UInt32Array>(target_col);
+                    break;
+                case arrow::Type::INT64:
+                    tgt_i64 = std::static_pointer_cast<arrow::Int64Array>(target_col);
+                    break;
+                case arrow::Type::INT32:
+                    tgt_i32 = std::static_pointer_cast<arrow::Int32Array>(target_col);
+                    break;
+                default:
+                    throw std::runtime_error("Unsupported target_id column type " + target_col->type()->ToString());
+            }
 
-        for (int64_t i = 0; i < batch->num_rows(); ++i) {
-            VertexId s;
-            if (src_i64) s = static_cast<VertexId>(src_i64->Value(i));
-            else if (src_i32) s = static_cast<VertexId>(src_i32->Value(i));
-            else s = src_u32->Value(i);
-            VertexId t;
-            if (tgt_i64) t = static_cast<VertexId>(tgt_i64->Value(i));
-            else if (tgt_i32) t = static_cast<VertexId>(tgt_i32->Value(i));
-            else t = tgt_u32->Value(i);
-            add_edge(s, t);
+            for (int64_t i = 0; i < batch->num_rows(); ++i) {
+                VertexId s;
+                if (src_i64) s = static_cast<VertexId>(src_i64->Value(i));
+                else if (src_i32) s = static_cast<VertexId>(src_i32->Value(i));
+                else s = src_u32->Value(i);
+                VertexId t;
+                if (tgt_i64) t = static_cast<VertexId>(tgt_i64->Value(i));
+                else if (tgt_i32) t = static_cast<VertexId>(tgt_i32->Value(i));
+                else t = tgt_u32->Value(i);
+                add_edge(s, t);
+            }
+        } else {
+            // UID mapping path
+            if (!uid_map_ready_)
+                throw std::runtime_error("UID mapping required but not built (no UID column seen in vertices)");
+
+            std::shared_ptr<arrow::StringArray> su, tu;
+            std::shared_ptr<arrow::LargeStringArray> slu, tlu;
+            if (source_uid_col->type()->id() == arrow::Type::STRING)
+                su = std::static_pointer_cast<arrow::StringArray>(source_uid_col);
+            else
+                slu = std::static_pointer_cast<arrow::LargeStringArray>(source_uid_col);
+            if (target_uid_col->type()->id() == arrow::Type::STRING)
+                tu = std::static_pointer_cast<arrow::StringArray>(target_uid_col);
+            else
+                tlu = std::static_pointer_cast<arrow::LargeStringArray>(target_uid_col);
+
+            auto view_at = [](const std::shared_ptr<arrow::StringArray>& arr, int64_t i) -> absl::string_view {
+                const int32_t off = arr->value_offset(static_cast<int32_t>(i));
+                const int32_t len = arr->value_length(static_cast<int32_t>(i));
+                const char*   ptr = reinterpret_cast<const char*>(arr->value_data()->data()) + off;
+                return absl::string_view(ptr, static_cast<size_t>(len));
+            };
+            auto lview_at = [](const std::shared_ptr<arrow::LargeStringArray>& arr, int64_t i) -> absl::string_view {
+                const int64_t off = arr->value_offset(i);
+                const int64_t len = arr->value_length(i);
+                const char*   ptr = reinterpret_cast<const char*>(arr->value_data()->data()) + off;
+                return absl::string_view(ptr, static_cast<size_t>(len));
+            };
+            for (int64_t i = 0; i < batch->num_rows(); ++i) {
+                if ((su && su->IsNull(i)) || (slu && slu->IsNull(i)) ||
+                    (tu && tu->IsNull(i)) || (tlu && tlu->IsNull(i))) continue;
+                absl::string_view sid = su ? view_at(su, i) : lview_at(slu, i);
+                absl::string_view tid = tu ? view_at(tu, i) : lview_at(tlu, i);
+                auto si = uid2id_.find(sid);
+                auto ti = uid2id_.find(tid);
+                if (si == uid2id_.end() || ti == uid2id_.end()) continue;
+                add_edge(si->second, ti->second);
+            }
         }
     }
+}
+
+void EnhancedGraph::clear_uid_map() {
+    uid2id_.clear();
+    uid2id_.rehash(0);
+    uid_owner_chunks_.clear(); // release pinned Arrow buffers
+    uid_owner_chunks_.shrink_to_fit();
+    uid_map_ready_ = false;
 }
 
 // void EnhancedGraph::evict_lru_cache_entry() {
@@ -1012,13 +1082,92 @@ void EnhancedGraph::set_country_lists(CountryLists lists) {
     country_lists_ = std::move(lists);
 }
 
+void EnhancedGraph::set_country_lists_by_names(const std::vector<std::string>& us,
+                                               const std::vector<std::string>& cn,
+                                               const std::vector<std::string>& eu) {
+    CountryLists lists;
+    lists.us_names = us; lists.cn_names = cn; lists.eu_names = eu;
+    set_country_lists(std::move(lists));
+}
+
+// ---- Region bitmap persistence ----
+static bool write_roar(const Roaring& r, const std::string& path) {
+    FILE* f = fopen(path.c_str(), "wb"); if (!f) return false;
+    size_t sz = r.getSizeInBytes();
+    std::string buf; buf.resize(sz);
+    r.write(reinterpret_cast<char*>(buf.data()));
+    size_t w = fwrite(buf.data(), 1, sz, f);
+    fclose(f);
+    return w == sz;
+}
+static bool read_roar(Roaring& r, const std::string& path) {
+    FILE* f = fopen(path.c_str(), "rb"); if (!f) return false;
+    fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); return false; }
+    std::string buf; buf.resize(sz);
+    size_t rd = fread(buf.data(), 1, sz, f);
+    fclose(f);
+    if (rd != (size_t)sz) return false;
+    r = Roaring::read(reinterpret_cast<const char*>(buf.data()));
+    return true;
+}
+
+bool EnhancedGraph::save_region_bitmaps(const std::string& dir) const {
+    std::string d = dir; if (!d.empty() && d.back() != '/') d.push_back('/');
+    return write_roar(regions_.us, d + "us.roar")
+        && write_roar(regions_.cn, d + "cn.roar")
+        && write_roar(regions_.eu, d + "eu.roar");
+}
+bool EnhancedGraph::load_region_bitmaps(const std::string& dir) {
+    std::string d = dir; if (!d.empty() && d.back() != '/') d.push_back('/');
+    Roaring us, cn, eu;
+    if (!read_roar(us, d + "us.roar")) return false;
+    if (!read_roar(cn, d + "cn.roar")) return false;
+    if (!read_roar(eu, d + "eu.roar")) return false;
+    regions_.us = std::move(us);
+    regions_.cn = std::move(cn);
+    regions_.eu = std::move(eu);
+    return true;
+}
+
+// ---- PropertyStore persistence for "year" ----
+bool PropertyStore::save_bitmaps(const std::string& prop, const std::string& dir) const {
+    auto it = categorical_bitmaps_.find(prop);
+    if (it == categorical_bitmaps_.end()) return false;
+    std::string d = dir; if (!d.empty() && d.back() != '/') d.push_back('/');
+    // mkdir -p is left to caller
+    for (const auto& kv : it->second) {
+        std::string path = d + prop + "_" + std::to_string(kv.first) + ".roar";
+        if (!write_roar(kv.second, path)) return false;
+    }
+    return true;
+}
+bool PropertyStore::load_bitmaps(const std::string& prop, const std::string& dir) {
+    // very simple loader: scan directory for prop_*.roar
+    std::string d = dir; if (!d.empty() && d.back() != '/') d.push_back('/');
+    // assume caller knows which years exist; try a reasonable range or pre-generated index.
+    // Minimal: try to open files present in directory via POSIX glob would be best; here we keep it minimal.
+    // If you need robust loading, add a manifest. For now, return false to avoid surprising behavior.
+    return false;
+}
+
 const Roaring* EnhancedGraph::region_bitmap_for(CiterFilter f) const {
-    std::call_once(regions_once_, [&]{
-        // Build on first use, thread-safe
-        // Note: PropertyStore is immutable at query time here
-        const_cast<EnhancedGraph*>(this)->build_region_bitmaps_from(
-            const_cast<PropertyStore&>(this->properties), country_lists_);
-    });
+    // std::call_once(regions_once_, [&]{
+    //     // Build on first use, thread-safe
+    //     // Note: PropertyStore is immutable at query time here
+    //     const_cast<EnhancedGraph*>(this)->build_region_bitmaps_from(
+    //         const_cast<PropertyStore&>(this->properties), country_lists_);
+    // });
+    if (!regions_prebuilt_) {
+        std::call_once(regions_once_, [&]{
+            // Build on first use, unless regions were already ingested directly
+            if (!regions_prebuilt_) {
+                const_cast<EnhancedGraph*>(this)->build_region_bitmaps_from(
+                    const_cast<PropertyStore&>(this->properties), country_lists_);
+            const_cast<EnhancedGraph*>(this)->regions_prebuilt_ = true;
+        }
+        });
+    }
     switch (f) {
         case CiterFilter::OnlyUS:
         case CiterFilter::ExcludeUS: return &regions_.us;
@@ -1033,28 +1182,146 @@ const Roaring* EnhancedGraph::region_bitmap_for(CiterFilter f) const {
 arrow::Status EnhancedGraph::ingest_countries_from_parquet(const std::shared_ptr<arrow::Table>& table,
                                                            const std::string& uid_col,
                                                            const std::string& country_col) {
-    // If the parquet has numeric paper_id instead of UID, we can do a fast path:
-    auto pid_col = table->GetColumnByName("paper_id");
-    if (pid_col && pid_col->type()->id() == arrow::Type::UINT32) {
-        // Wrap into a two-column table like ingest_arrow expects
-        // But we want direct build: emulate uid2id via paper_id as decimal string keys (or add new direct variant)
-        // Simpler: build a temporary uid2id' where key is std::to_string(paper_id)
-        std::unordered_map<std::string, VertexId> pid_map;
-        arrow::TableBatchReader reader(*table);
-        reader.set_chunksize(get_ingest_chunk_size());
-        std::shared_ptr<arrow::RecordBatch> batch;
-        while (true) {
-            auto rs = reader.Next();
-            if (!rs.ok()) { return rs.status(); }
-            batch = *rs;
-            if (!batch) break;
-            auto pid = std::static_pointer_cast<arrow::UInt32Array>(batch->GetColumnByName("paper_id"));
-            for (int64_t i=0;i<batch->num_rows();++i) if (!pid->IsNull(i)) {
-                pid_map.emplace(std::to_string(pid->Value(i)), pid->Value(i));
+    // // If the parquet has numeric paper_id instead of UID, we can do a fast path:
+    // auto pid_col = table->GetColumnByName("paper_id");
+    // if (pid_col && pid_col->type()->id() == arrow::Type::UINT32) {
+    //     // Wrap into a two-column table like ingest_arrow expects
+    //     // But we want direct build: emulate uid2id via paper_id as decimal string keys (or add new direct variant)
+    //     // Simpler: build a temporary uid2id' where key is std::to_string(paper_id)
+    //     std::unordered_map<std::string, VertexId> pid_map;
+    //     arrow::TableBatchReader reader(*table);
+    //     reader.set_chunksize(get_ingest_chunk_size());
+    //     std::shared_ptr<arrow::RecordBatch> batch;
+    //     while (true) {
+    //         auto rs = reader.Next();
+    //         if (!rs.ok()) { return rs.status(); }
+    //         batch = *rs;
+    //         if (!batch) break;
+    //         auto pid = std::static_pointer_cast<arrow::UInt32Array>(batch->GetColumnByName("paper_id"));
+    //         for (int64_t i=0;i<batch->num_rows();++i) if (!pid->IsNull(i)) {
+    //             pid_map.emplace(std::to_string(pid->Value(i)), pid->Value(i));
+    //         }
+    //     }
+    //     return properties.ingest_country_direct(table, pid_map, "paper_id", country_col);
+    // }
+    // // Normal path: use real UID→id mapping captured during vertex load
+    // return properties.ingest_country_direct(table, uid2id_, uid_col, country_col);
+    // REGION-ONLY, ZERO-COPY INGEST:
+    // Build regions_.{us,cn,eu} directly without populating per-country dictionaries/bitmaps.
+    // All membership checks are done against small string sets (us_names, cn_names, eu_names).
+
+    if (!table) return arrow::Status::Invalid("null table for ingest_countries_from_parquet");
+
+    // Pre-build fast membership sets (tiny)
+    std::unordered_set<std::string> us_set, cn_set, eu_set;
+
+    us_set.insert(country_lists_.us_names.begin(), country_lists_.us_names.end());
+    cn_set.insert(country_lists_.cn_names.begin(), country_lists_.cn_names.end());
+    eu_set.insert(country_lists_.eu_names.begin(), country_lists_.eu_names.end());
+
+    auto country_arr_any = table->GetColumnByName(country_col);
+    if (!country_arr_any) {
+        return arrow::Status::Invalid("country table missing country column: " + country_col);
+    }
+
+    // Helper lambdas to make absl::string_view without allocating
+    auto sv_at = [](const std::shared_ptr<arrow::StringArray>& arr, int64_t i) -> absl::string_view {
+        const int32_t off = arr->value_offset(static_cast<int32_t>(i));
+        const int32_t len = arr->value_length(static_cast<int32_t>(i));
+        const char*   ptr = reinterpret_cast<const char*>(arr->value_data()->data()) + off;
+        return absl::string_view(ptr, static_cast<size_t>(len));
+    };
+    auto lsv_at = [](const std::shared_ptr<arrow::LargeStringArray>& arr, int64_t i) -> absl::string_view {
+        const int64_t off = arr->value_offset(i);
+        const int64_t len = arr->value_length(i);
+        const char*   ptr = reinterpret_cast<const char*>(arr->value_data()->data()) + off;
+        return absl::string_view(ptr, static_cast<size_t>(len));
+    };
+
+    arrow::TableBatchReader reader(*table);
+    reader.set_chunksize(get_ingest_chunk_size());
+    std::shared_ptr<arrow::RecordBatch> batch;
+
+    // Fast path if numeric paper_id is present (UINT32/INT64/INT32)
+    const auto pid_any = table->GetColumnByName("paper_id");
+    const bool have_numeric_pid = (pid_any &&
+        (pid_any->type()->id() == arrow::Type::UINT32 ||
+         pid_any->type()->id() == arrow::Type::INT64  ||
+         pid_any->type()->id() == arrow::Type::INT32));
+
+    while (true) {
+        ARROW_ASSIGN_OR_RAISE(batch, reader.Next());
+        if (!batch) break;
+
+        auto c_any = batch->GetColumnByName(country_col);
+        if (!c_any) continue;
+        std::shared_ptr<arrow::StringArray>      c_str;
+        std::shared_ptr<arrow::LargeStringArray> c_lstr;
+        const auto cid = c_any->type()->id();
+        if (cid == arrow::Type::STRING)      c_str  = std::static_pointer_cast<arrow::StringArray>(c_any);
+        else if (cid == arrow::Type::LARGE_STRING) c_lstr = std::static_pointer_cast<arrow::LargeStringArray>(c_any);
+        else continue; // ignore non-string country column
+
+        if (have_numeric_pid) {
+            // Numeric ID + country string
+            auto p_any = batch->GetColumnByName("paper_id");
+            std::shared_ptr<arrow::UInt32Array> p_u32;
+            std::shared_ptr<arrow::Int64Array>  p_i64;
+            std::shared_ptr<arrow::Int32Array>  p_i32;
+            switch (p_any->type()->id()) {
+                case arrow::Type::UINT32: p_u32 = std::static_pointer_cast<arrow::UInt32Array>(p_any); break;
+                case arrow::Type::INT64:  p_i64 = std::static_pointer_cast<arrow::Int64Array>(p_any); break;
+                case arrow::Type::INT32:  p_i32 = std::static_pointer_cast<arrow::Int32Array>(p_any); break;
+                default: break;
+            }
+            for (int64_t i = 0; i < batch->num_rows(); ++i) {
+                if ((c_str  && c_str->IsNull(i))  || (c_lstr && c_lstr->IsNull(i))) continue;
+                VertexId vid;
+                if      (p_u32 && !p_u32->IsNull(i)) vid = p_u32->Value(i);
+                else if (p_i64 && !p_i64->IsNull(i)) vid = static_cast<VertexId>(p_i64->Value(i));
+                else if (p_i32 && !p_i32->IsNull(i)) vid = static_cast<VertexId>(p_i32->Value(i));
+                else continue;
+
+                absl::string_view c = c_str ? sv_at(c_str, i) : lsv_at(c_lstr, i);
+                // membership in tiny sets (already normalized lowercase)
+                if      (us_set.count(std::string(c))) regions_.us.add(vid);
+                else if (cn_set.count(std::string(c))) regions_.cn.add(vid);
+                else if (eu_set.count(std::string(c))) regions_.eu.add(vid);
+            }
+        } else {
+            // UID + country string: zero-copy lookup via uid2id_ (keys are string_view)
+            auto u_any = batch->GetColumnByName(uid_col);
+            if (!u_any) continue;
+            std::shared_ptr<arrow::StringArray>      u_str;
+            std::shared_ptr<arrow::LargeStringArray> u_lstr;
+            const auto uid = u_any->type()->id();
+            if (uid == arrow::Type::STRING)      u_str  = std::static_pointer_cast<arrow::StringArray>(u_any);
+            else if (uid == arrow::Type::LARGE_STRING) u_lstr = std::static_pointer_cast<arrow::LargeStringArray>(u_any);
+            else continue;
+
+            if (!uid_map_ready_) {
+                return arrow::Status::Invalid("UID mapping required but not built: vertices must be ingested first with UID column");
+            }
+            for (int64_t i = 0; i < batch->num_rows(); ++i) {
+                if ((c_str && c_str->IsNull(i)) || (c_lstr && c_lstr->IsNull(i))) continue;
+                if ((u_str && u_str->IsNull(i)) || (u_lstr && u_lstr->IsNull(i))) continue;
+
+                absl::string_view uid_view = u_str ? sv_at(u_str, i) : lsv_at(u_lstr, i);
+                auto it = uid2id_.find(uid_view);
+                if (it == uid2id_.end()) continue;
+                VertexId vid = it->second;
+
+                absl::string_view c = c_str ? sv_at(c_str, i) : lsv_at(c_lstr, i);
+                if      (us_set.count(std::string(c))) regions_.us.add(vid);
+                else if (cn_set.count(std::string(c))) regions_.cn.add(vid);
+                else if (eu_set.count(std::string(c))) regions_.eu.add(vid);
             }
         }
-        return properties.ingest_country_direct(table, pid_map, "paper_id", country_col);
     }
-    // Normal path: use real UID→id mapping captured during vertex load
-    return properties.ingest_country_direct(table, uid2id_, uid_col, country_col);
+
+    regions_.us.runOptimize();
+    regions_.cn.runOptimize();
+    regions_.eu.runOptimize();
+    regions_prebuilt_ = true;  // tell region_bitmap_for() not to rebuild from PropertyStore
+    return arrow::Status::OK();
 }
