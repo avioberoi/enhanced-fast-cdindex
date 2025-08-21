@@ -23,6 +23,6 @@ clean:
 
 # Regression test
 test:
-	bin/cdindex | diff ../tests/bin.ok -
-	python ../tests/tests.py | diff ../tests/py.ok -
+	bin/cdindex | diff bin.ok -
+	python tests.py | diff py.ok -
 

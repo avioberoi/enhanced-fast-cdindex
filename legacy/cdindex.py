@@ -18,16 +18,15 @@ except ImportError:
   from __builtin__ import int
 
 # custom modules
-if "READTHEDOCS" not in os.environ:
-  try: 
-    import fast_cdindex._cdindex as _cdindex
-  except ImportError:
-    import _cdindex
+_cdindex = None  # C extension not available in legacy directory
 
 try:
-  import fast_cdindex.time_utilities
+  from time_utilities import timestamp_from_datetime
 except ImportError:
-  import time_utilities
+  # time_utilities not available, define a simple timestamp function
+  def timestamp_from_datetime(dt):
+    import time
+    return int(time.mktime(dt.timetuple()))
 
 class Graph:
   """Create a graph.
@@ -82,6 +81,9 @@ class Graph:
       List of edges with sources and targets, e.g., [{"source": "4Z", "target": "2Z"}].
     """
 
+    if _cdindex is None:
+      raise ImportError("Legacy C extension not available. Please build the legacy extension or use the enhanced version.")
+    
     self._graph = _cdindex.Graph()
     self._vertex_name_crosswalk = {}
     self._vertex_id_crosswalk = {}
