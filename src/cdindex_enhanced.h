@@ -6,6 +6,8 @@
 #include <deque>
 #include <mutex>
 #include <list>
+#include <atomic>
+#include <limits>
 #include <arrow/api.h>
 #include <roaring/roaring.hh>
 #include <absl/container/flat_hash_map.h>
@@ -14,6 +16,8 @@
 #include <chrono>
 #include <string>
 #include <absl/strings/string_view.h>
+#include <tuple>
+#include <array>
 
 using VertexId = uint32_t;
 using timestamp_t = int64_t;
@@ -80,14 +84,7 @@ public:
         order_.splice(order_.begin(), order_, it->second.second);
         return &it->second.first;
     }
-    // // New method for shared_ptr types - returns copy of shared_ptr for safe lifetime
-    // template<typename T>
-    // std::shared_ptr<T> get_shared(const K& k, std::enable_if_t<std::is_same_v<V, std::shared_ptr<T>>, int> = 0) {
-    //     auto it = map_.find(k);
-    //     if (it == map_.end()) return nullptr;
-    //     order_.splice(order_.begin(), order_, it->second.second);
-    //     return it->second.first;  // Returns copy of shared_ptr, incrementing refcount
-    // }
+
     void put(const K& k, V v) {
         auto it = map_.find(k);
         if (it != map_.end()) {
@@ -101,22 +98,6 @@ public:
         order_.push_front(k);
         map_.emplace(k, std::make_pair(std::move(v), order_.begin()));
     }
-    // // New method for shared_ptr types - returns copy for safe lifetime
-    // template<typename T>
-    // std::shared_ptr<T> put_and_get_shared(const K& k, V v, std::enable_if_t<std::is_same_v<V, std::shared_ptr<T>>, int> = 0) {
-    //     auto it = map_.find(k);
-    //     if (it != map_.end()) {
-    //         it->second.first = std::move(v);
-    //         order_.splice(order_.begin(), order_, it->second.second);
-    //         return it->second.first;
-    //     }
-    //     if (map_.size() == cap_) {
-    //         K ev = order_.back(); order_.pop_back(); map_.erase(ev);
-    //     }
-    //     order_.push_front(k);
-    //     auto [pos, _] = map_.emplace(k, std::make_pair(std::move(v), order_.begin()));
-    //     return pos->second.first;
-    // }
     // Generic helpers that return a copy of the stored value.
     // For shared_ptr V, this safely bumps refcount and returns a usable handle.
     V get_copy(const K& k) {
@@ -174,10 +155,11 @@ struct CDIndexBenchmark {
     uint64_t hf_hit = 0, hf_all = 0;  // Predecessor cache (filtered)
     uint64_t hb_hit = 0, hb_all = 0;  // B_any cache
     uint64_t hu_hit = 0, hu_all = 0;  // Predecessor cache (unfiltered)
+    uint64_t hw_hit = 0, hw_all = 0;  // Window cache (W_t)
     
     void reset() {
         t1 = t2 = t3 = 0.0;
-        n = hf_hit = hf_all = hb_hit = hb_all = hu_hit = hu_all = 0;
+        n = hf_hit = hf_all = hb_hit = hb_all = hu_hit = hu_all = hw_hit = hw_all = 0;
     }
     
     void print_summary() const;
@@ -268,7 +250,8 @@ public:
   void add_edge(VertexId s, VertexId t);
   double cdindex(VertexId focal_id, time_delta_t dt);
   double cdindex_core(VertexId focal_id, time_delta_t dt,
-                      const Roaring* region, bool include_region);
+                      const Roaring* region, bool include_region, const Roaring* F_t_cached = nullptr,
+                      const Roaring* B_any_cached = nullptr, const Roaring* W_t_cached = nullptr);
   void prepare_for_searching();
   void sort_incoming_edges_by_time();
   
@@ -283,15 +266,18 @@ public:
   std::vector<VertexId> in_edges(VertexId id) const;
   std::vector<VertexId> out_edges(VertexId id) const;
   timestamp_t get_timestamp(VertexId id) const;
+  std::vector<VertexId> get_citers(VertexId focal_id, time_delta_t dt);
   
   // Public getters for metrics
   [[nodiscard]] size_t vertex_count() const noexcept { return vertices_.size(); }
-  [[nodiscard]] size_t edge_count() const noexcept { return all_edges_.size(); }
+  [[nodiscard]] size_t edge_count() const noexcept { 
+    size_t m = 0;
+    for (const auto& kv : incoming_edges_) m += kv.second.size();
+    return m;
+  }
 protected:
-  std::vector<Vertex*> get_citers(VertexId focal_id, time_delta_t dt);
   absl::flat_hash_map<VertexId, Vertex*> vertices_;
   absl::flat_hash_map<VertexId, std::vector<Vertex*>> incoming_edges_;
-  std::vector<Edge*> all_edges_;
   bool incoming_edges_sorted_by_time_ = false;
 };
 
@@ -299,15 +285,23 @@ class EnhancedGraph : public Graph {
 public:
   PropertyStore properties;
   
+  uint64_t cdindex_abi_cookie() { return 0xC0FFEEULL ^ sizeof(EnhancedGraph); }
+  
   // Constructor to initialize LRU caches with increased sizes to reduce thrash
   EnhancedGraph() : predecessor_bitmap_cache_(std::max(int64_t(512), MAX_CACHE_ENTRIES())), 
                     predecessor_bitmap_cache_unfiltered_(std::max(int64_t(512), MAX_CACHE_ENTRIES())),
                     bany_lru_(std::max(int64_t(512), MAX_CACHE_ENTRIES())),
-                    timewin_lru_(1024) {}
+                    timewin_lru_(4096) {}
   void add_vertices_from_arrow(const std::shared_ptr<arrow::Table>& table);
   void add_edges_from_arrow(const std::shared_ptr<arrow::Table>& table);
   void clear_filter_cache();
   void clear_predecessor_cache();
+  
+  // DEBUG: Verify incoming edges pointer integrity
+  bool verify_incoming_integrity(size_t samples = 1000) const;
+  
+  // DEBUG: Verify region bitmaps work correctly with time windows
+  bool verify_regions_against_years(timestamp_t ft, time_delta_t dt) const;
   
   // SAFE CACHE ACCESS: Return shared_ptr to prevent use-after-free
   std::shared_ptr<const Roaring> get_cached_predecessor_bitmap_sp(VertexId pred_id, timestamp_t focal_time, time_delta_t dt);
@@ -340,7 +334,16 @@ public:
   bool save_year_bitmaps(const std::string& dir) const { return properties.save_bitmaps("year", dir); }
   bool load_year_bitmaps(const std::string& dir)       { return properties.load_bitmaps("year", dir); }
   void clear_uid_map();
+  void set_flip_edge_direction_on_ingest(bool v) { flip_edge_direction_on_ingest_ = v; }
+  bool debug_check_bany(VertexId fid) const;
+  // Debug: expose raw cardinalities for a focal/dt (unfiltered CD)
+  std::tuple<uint64_t,uint64_t,uint64_t,uint64_t,double>
+  debug_counts(VertexId fid, time_delta_t dt);
+  std::tuple<uint64_t,uint64_t,uint64_t> region_sizes() const;
 
+  // Compute base CD and 6 regional variants in a single pass:
+  // returns {cd, cd_only_us, cd_excl_us, cd_only_eu, cd_excl_eu, cd_only_cn, cd_excl_cn}
+  std::array<double,7> cdindex_all(VertexId fid, time_delta_t dt) const;
 private:
   // Predecessor bitmap caching with safe shared ownership
   mutable std::mutex predecessor_mutex_;
@@ -359,7 +362,7 @@ private:
   mutable RegionSets regions_;
   mutable std::once_flag regions_once_;
   CountryLists country_lists_;  // set via set_country_lists()
-  bool regions_prebuilt_ = false;  // set true if we ingest regions directly (no PropertyStore build)
+  mutable std::atomic<bool> regions_prebuilt_{false};  // set true if we ingest regions directly (no PropertyStore build)
 
   // Internal UID→id map (built when vertices provide UID)
 //   std::unordered_map<std::string, VertexId> uid2id_;
@@ -375,4 +378,8 @@ private:
   
 //   void evict_lru_cache_entry();
 //   void update_cache_access(const std::string& key);
+
+  // Internal flip edge direction on ingest flag
+  bool flip_edge_direction_on_ingest_ = false;
+
 };

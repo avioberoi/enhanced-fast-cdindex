@@ -12,7 +12,7 @@ import os
 # Define the extension module
 ext_modules = [
     Pybind11Extension(
-        "_cdindex",
+        "fast_cdindex._cdindex",
         ["src/cdindex_enhanced.cpp", "fast_cdindex/pybind.cpp"],
         include_dirs=[
             "src",

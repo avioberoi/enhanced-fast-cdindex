@@ -58,12 +58,11 @@ def main():
     """)
     con.execute(f"COPY edges TO '{epath}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 1000000);")
 
-    # Optional: write a tiny id map (UID -> paper_id) for outside-C++ use
-    # con.execute(f"""
-    #     COPY (SELECT UID, paper_id FROM years)
-    #     TO '{os.path.join(args.out_dir, 'id_map.parquet')}'
-    #     (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 1000000, CODEC '{args.zstd}');
-    # """)
+    con.execute(f"""
+        COPY (SELECT UID, paper_id FROM years)
+        TO '{os.path.join(args.out_dir, 'id_map.parquet')}'
+        (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 1000000, CODEC '{args.zstd}');
+    """)
 
     print("Wrote:", vpath, epath)
 

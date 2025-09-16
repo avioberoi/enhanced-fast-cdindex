@@ -38,7 +38,8 @@ PYBIND11_MODULE(_cdindex, m) {
         .def("get_timestamp", &Graph::get_timestamp, py::arg("paper_id"))
         .def("vertex_count", &Graph::vertex_count)
         .def("edge_count", &Graph::edge_count)
-        .def("prepare_for_searching", &Graph::prepare_for_searching);
+        .def("prepare_for_searching", &Graph::prepare_for_searching)
+        .def("get_citers", &Graph::get_citers, py::arg("paper_id"), py::arg("years"));
     
     py::class_<PropertyStore>(m, "PropertyStore")
         .def("ingest_arrow", [](PropertyStore &self, py::object table_obj) {
@@ -60,13 +61,32 @@ PYBIND11_MODULE(_cdindex, m) {
     // EnhancedGraph inherits from Graph
     py::class_<EnhancedGraph, Graph>(m, "EnhancedGraph")
         .def(py::init<>())
+        .def("abi_cookie", &EnhancedGraph::cdindex_abi_cookie)
         .def("add_vertex", &EnhancedGraph::add_vertex)
         .def("add_edge", &EnhancedGraph::add_edge)
         .def("cdindex", &EnhancedGraph::cdindex, py::arg("paper_id"), py::arg("years"))
         .def("cdindex_filtered", &EnhancedGraph::cdindex_filtered, 
              py::arg("paper_id"), py::arg("years"), py::arg("filter"),
              "Compute filtered CD-index excluding or including specific regions")
+
+        .def("cdindex_all",
+            [](EnhancedGraph& self, VertexId fid, time_delta_t dt) {
+            std::array<double,7> a;
+            {
+                py::gil_scoped_release release;       // compute without GIL
+                a = self.cdindex_all(fid, dt);
+            }   // GIL reacquired here, before we access a[...]
+            return py::make_tuple(a[0], a[1], a[2],
+                                    a[3], a[4], a[5], a[6]);
+            },
+            py::arg("paper_id"), py::arg("years"),
+            "Compute base CD and 6 regional variants in a single pass")
+        
         .def("clear_predecessor_cache", &EnhancedGraph::clear_predecessor_cache)
+        .def("verify_incoming_integrity", &EnhancedGraph::verify_incoming_integrity, 
+             py::arg("samples") = 1000, "Verify pointer integrity in incoming_edges")
+        .def("verify_regions_against_years", &EnhancedGraph::verify_regions_against_years,
+             py::arg("ft"), py::arg("dt"), "Verify region bitmaps work with time windows")
         .def_readonly("properties", &EnhancedGraph::properties)
         .def("add_vertices_from_arrow", [](EnhancedGraph &self, py::object table_obj) {
             PyObject* pobj = table_obj.ptr();
@@ -99,16 +119,16 @@ PYBIND11_MODULE(_cdindex, m) {
             self.set_country_lists_by_names(us_names, cn_names, eu_names);
         }, py::arg("us_names"), py::arg("cn_names"), py::arg("eu_names"))
 
-        .def("ingest_countries_from_parquet", [](EnhancedGraph& self,
-                                                 py::object table_obj,
-                                                 const std::string& uid_col,
-                                                 const std::string& country_col) {
-            PyObject* pobj = table_obj.ptr();
-            auto maybe_table = arrow::py::unwrap_table(pobj);
-            if (!maybe_table.ok()) throw std::runtime_error(maybe_table.status().message());
-            auto st = self.ingest_countries_from_parquet(*maybe_table, uid_col, country_col);
-            if (!st.ok()) throw std::runtime_error(st.message());
-        }, py::arg("table"), py::arg("uid_col")="UID", py::arg("country_col")="country")
+        // .def("ingest_countries_from_parquet", [](EnhancedGraph& self,
+        //                                          py::object table_obj,
+        //                                          const std::string& uid_col,
+        //                                          const std::string& country_col) {
+        //     PyObject* pobj = table_obj.ptr();
+        //     auto maybe_table = arrow::py::unwrap_table(pobj);
+        //     if (!maybe_table.ok()) throw std::runtime_error(maybe_table.status().message());
+        //     auto st = self.ingest_countries_from_parquet(*maybe_table, uid_col, country_col);
+        //     if (!st.ok()) throw std::runtime_error(st.message());
+        // }, py::arg("table"), py::arg("uid_col")="UID", py::arg("country_col")="country")
 
         .def("save_region_bitmaps", [](EnhancedGraph& self, const std::string& dir) {
             if (!self.save_region_bitmaps(dir)) throw std::runtime_error("save_region_bitmaps failed");
@@ -153,7 +173,23 @@ PYBIND11_MODULE(_cdindex, m) {
              py::arg("table"),
              py::arg("uid_col") = "UID",
              py::arg("country_col") = "country",
-             "Ingest normalized country strings and build 'country' bitmaps directly.");
+             "Ingest normalized country strings and build 'country' bitmaps directly.")
+        
+        .def("clear_uid_map", &EnhancedGraph::clear_uid_map, "Release UID→id map and pinned Arrow UID chunks")
+        .def("set_flip_edge_direction_on_ingest", &EnhancedGraph::set_flip_edge_direction_on_ingest,
+                 "Interpret input edges as (cited,citing) and flip to (citing,cited) at ingest")
+        .def("debug_check_bany", &EnhancedGraph::debug_check_bany,
+                "Cheap guardrail: compare cached B_any(fid) with fallback rebuild; returns True on match")
+        .def("debug_counts", &EnhancedGraph::debug_counts,
+            py::arg("paper_id"), py::arg("years"),
+            "Return (|F_t|, |F_t∩B_any|, |B_any∩W_t|, denom, cd) for sanity checks")
+            // cheap guardrail: B_any cardinality for focal (builds/uses cache)
+        .def("bany_cardinality", [](EnhancedGraph& g, VertexId fid){
+            auto sp = g.get_bany_for_focal_sp(fid);
+            return static_cast<uint64_t>(sp ? sp->cardinality() : 0);
+            }, py::arg("paper_id"),
+            "Cardinality of B_any for focal (union of citers of its references)")
+        .def("region_sizes", &EnhancedGraph::region_sizes);
     
     // Micro-benchmarking interface
     py::class_<CDIndexBenchmark>(m, "CDIndexBenchmark")

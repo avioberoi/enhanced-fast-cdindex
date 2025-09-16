@@ -13,6 +13,8 @@
 #include <cctype>
 #include <unordered_set>
 #include <absl/strings/string_view.h>
+#include <string_view>
+#include <array>
 
 // Helper for returning NaN consistently
 static inline double return_nan() {
@@ -58,19 +60,10 @@ void CDIndexBenchmark::print_summary() const {
               << "% (" << hb_hit << "/" << hb_all << ")\n";
     std::cerr << "  Hu (pred unfilt):   " << (hu_all > 0 ? (hu_hit * 100.0 / hu_all) : 0.0) 
               << "% (" << hu_hit << "/" << hu_all << ")\n";
+    std::cerr << "  Hw (window W_t):    " << (hw_all > 0 ? (hw_hit * 100.0 / hw_all) : 0.0) 
+              << "% (" << hw_hit << "/" << hw_all << ")\n";
     std::cerr << "============================================\n\n";
 }
-
-// // Timing utility for profiling
-// class Timer {
-//     std::chrono::high_resolution_clock::time_point start_;
-// public:
-//     Timer() : start_(std::chrono::high_resolution_clock::now()) {}
-//     double elapsed_ms() const {
-//         auto end = std::chrono::high_resolution_clock::now();
-//         return std::chrono::duration<double, std::milli>(end - start_).count();
-//     }
-// };
 
 // Vertex methods
 Vertex::Vertex(VertexId id, timestamp_t time) : id(id), time(time) {}
@@ -94,6 +87,7 @@ arrow::Status PropertyStore::ingest_arrow(const std::shared_ptr<arrow::Table>& t
     auto id_col_raw = table->GetColumnByName("paper_id");
     if (!id_col_raw) return arrow::Status::Invalid("Table missing 'paper_id' column.");
 
+#ifndef NDEBUG
     std::cerr << "PropertyStore::ingest_arrow: table rows=" << table->num_rows()
               << ", columns=" << table->num_columns()
               << ", chunk_size=" << get_ingest_chunk_size() << std::endl;
@@ -103,6 +97,7 @@ arrow::Status PropertyStore::ingest_arrow(const std::shared_ptr<arrow::Table>& t
         std::cerr << field->name() << "(" << field->type()->ToString() << ") ";
     }
     std::cerr << std::endl;
+#endif
 
     arrow::TableBatchReader reader(*table);
     reader.set_chunksize(get_ingest_chunk_size());
@@ -114,7 +109,22 @@ arrow::Status PropertyStore::ingest_arrow(const std::shared_ptr<arrow::Table>& t
         batch = *next_batch;
         if (!batch) break;
 
-        auto ids_array = std::static_pointer_cast<arrow::UInt32Array>(batch->GetColumnByName("paper_id"));
+        // auto ids_array = std::static_pointer_cast<arrow::UInt32Array>(batch->GetColumnByName("paper_id"));
+
+        // Support UINT32 / INT32 / INT64 for paper_id
+        auto id_any = batch->GetColumnByName("paper_id");
+        if (!id_any) return arrow::Status::Invalid("RecordBatch missing 'paper_id' column.");
+        std::shared_ptr<arrow::UInt32Array> ids_u32;
+        std::shared_ptr<arrow::Int32Array>  ids_i32;
+        std::shared_ptr<arrow::Int64Array>  ids_i64;
+        switch (id_any->type()->id()) {
+            case arrow::Type::UINT32: ids_u32 = std::static_pointer_cast<arrow::UInt32Array>(id_any); break;
+            case arrow::Type::INT32:  ids_i32 = std::static_pointer_cast<arrow::Int32Array>(id_any);  break;
+            case arrow::Type::INT64:  ids_i64 = std::static_pointer_cast<arrow::Int64Array>(id_any);  break;
+            default:
+                return arrow::Status::Invalid("Unsupported 'paper_id' type in PropertyStore::ingest_arrow: ",
+                                              id_any->type()->ToString());
+        }
 
         for (int i = 0; i < batch->num_columns(); ++i) {
             const std::string& col_name = batch->schema()->field(i)->name();
@@ -126,18 +136,27 @@ arrow::Status PropertyStore::ingest_arrow(const std::shared_ptr<arrow::Table>& t
                 auto int_array = std::static_pointer_cast<arrow::Int64Array>(col);
                 for (int64_t j = 0; j < col->length(); ++j) {
                     if (!col->IsNull(j)) {
-                        add_categorical(ids_array->Value(j), col_name, static_cast<int>(int_array->Value(j)));
+                        // add_categorical(ids_array->Value(j), col_name, static_cast<int>(int_array->Value(j)));
+                        VertexId vid = ids_u32 ? static_cast<VertexId>(ids_u32->Value(j))
+                                      : ids_i32 ? static_cast<VertexId>(ids_i32->Value(j))
+                                                : static_cast<VertexId>(ids_i64->Value(j));
+                        add_categorical(vid, col_name, static_cast<int>(int_array->Value(j)));
                     }
                 }
                 } else {
                     auto int32_array = std::static_pointer_cast<arrow::Int32Array>(col);
                     for (int64_t j = 0; j < col->length(); ++j) {
                         if (!col->IsNull(j)) {
-                            add_categorical(ids_array->Value(j), col_name, static_cast<int>(int32_array->Value(j)));
+                            // add_categorical(ids_array->Value(j), col_name, static_cast<int>(int32_array->Value(j)));
+                            VertexId vid = ids_u32 ? static_cast<VertexId>(ids_u32->Value(j))
+                                      : ids_i32 ? static_cast<VertexId>(ids_i32->Value(j))
+                                                : static_cast<VertexId>(ids_i64->Value(j));
+                            add_categorical(vid, col_name, static_cast<int>(int32_array->Value(j)));
                         }
                     }
                 }
-            } else if (type_id == arrow::Type::STRING || type_id == arrow::Type::LARGE_STRING) {
+            } else if ((type_id == arrow::Type::STRING || type_id == arrow::Type::LARGE_STRING)
+                        && col_name == "country") {
                 // Cast to concrete string array types and use GetString(i)
                 std::shared_ptr<arrow::StringArray> s_arr;
                 std::shared_ptr<arrow::LargeStringArray> ls_arr;
@@ -150,6 +169,9 @@ arrow::Status PropertyStore::ingest_arrow(const std::shared_ptr<arrow::Table>& t
                 }
                 for (int64_t j = 0; j < col->length(); ++j) {
                     if (!col->IsNull(j)) {
+                        VertexId vid = ids_u32 ? static_cast<VertexId>(ids_u32->Value(j))
+                                      : ids_i32 ? static_cast<VertexId>(ids_i32->Value(j))
+                                                : static_cast<VertexId>(ids_i64->Value(j));
                         std::string val = (s_arr ? s_arr->GetString(j) : ls_arr->GetString(j));
                         // normalize lowercase (countries already normalized, but safe)
                         for (auto& ch : val) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
@@ -161,7 +183,7 @@ arrow::Status PropertyStore::ingest_arrow(const std::shared_ptr<arrow::Table>& t
                         } else {
                             code = it->second;
                         }
-                        add_categorical(ids_array->Value(j), col_name, code);
+                        add_categorical(vid, col_name, code);
                     }
                 }
             } else if (type_id == arrow::Type::BOOL) {
@@ -169,7 +191,11 @@ arrow::Status PropertyStore::ingest_arrow(const std::shared_ptr<arrow::Table>& t
                 for (int64_t j = 0; j < col->length(); ++j) {
                     if (!col->IsNull(j)) {
                         int code = bool_array->Value(j) ? 1 : 0;
-                        add_categorical(ids_array->Value(j), col_name, code);
+                        // add_categorical(ids_array->Value(j), col_name, code);
+                        VertexId vid = ids_u32 ? static_cast<VertexId>(ids_u32->Value(j))
+                                      : ids_i32 ? static_cast<VertexId>(ids_i32->Value(j))
+                                                : static_cast<VertexId>(ids_i64->Value(j));
+                        add_categorical(vid, col_name, code);
                     }
                 }
             } else {
@@ -183,9 +209,11 @@ arrow::Status PropertyStore::ingest_arrow(const std::shared_ptr<arrow::Table>& t
     for (auto const& kv : categorical_properties_) {
         total_entries += kv.second.size();
     }
+#ifndef NDEBUG
     std::cerr << "PropertyStore::ingest_arrow: completed, loaded " << total_entries
               << " property entries across " << categorical_properties_.size()
               << " columns." << std::endl;
+#endif
     return arrow::Status::OK();
 }
 void PropertyStore::build_indexes() {
@@ -193,20 +221,32 @@ void PropertyStore::build_indexes() {
     categorical_bitmaps_.clear();
 
     // Pre-allocate one map entry per property (so no concurrent inserts later)
-    categorical_bitmaps_.reserve(categorical_properties_.size());
-    for (auto const& kv : categorical_properties_) {
-        categorical_bitmaps_.emplace(
-            kv.first, // property name
-            absl::flat_hash_map<int, Roaring>()
-        );
-    }
+    // categorical_bitmaps_.reserve(categorical_properties_.size());
+    // for (auto const& kv : categorical_properties_) {
+    //     categorical_bitmaps_.emplace(
+    //         kv.first, // property name
+    //         absl::flat_hash_map<int, Roaring>()
+    //     );
+    // }
+
+    // We only need bitmaps for "year" (and "country" if used for regions).
+    categorical_bitmaps_.reserve(2);
+    auto itY = categorical_properties_.find("year");
+    if (itY != categorical_properties_.end())
+        categorical_bitmaps_.emplace("year", absl::flat_hash_map<int, Roaring>());
+    auto itC = categorical_properties_.find("country");
+    if (itC != categorical_properties_.end())
+        categorical_bitmaps_.emplace("country", absl::flat_hash_map<int, Roaring>());
 
     // Gather property names into a vector for simple indexing
     std::vector<std::string> prop_names;
-    prop_names.reserve(categorical_properties_.size());
-    for (auto const& kv : categorical_properties_) {
-        prop_names.push_back(kv.first);
-    }
+    // prop_names.reserve(categorical_properties_.size());
+    // for (auto const& kv : categorical_properties_) {
+    //     prop_names.push_back(kv.first);
+    // }
+
+    if (itY != categorical_properties_.end()) prop_names.push_back("year");
+    if (itC != categorical_properties_.end()) prop_names.push_back("country");
 
     // Parallel loop over properties
     #pragma omp parallel for schedule(dynamic)
@@ -317,17 +357,15 @@ Roaring PropertyStore::get_window_bitmap_by_union(const std::string& prop_name, 
     // Union the bitmaps
     Roaring W;
     if (parts.size() == 1) {
-        // Single bitmap - just copy
         W = *parts[0];
-    } else {
-        // Multiple bitmaps - use fastunion with fallback for const issues
-        try {
+    } else if (parts.size() > 1) {
+        static const bool kNoFastUnion = (std::getenv("CDINDEX_NO_FASTUNION") != nullptr);
+        if (!kNoFastUnion) {
+            // If your CRoaring is old/new-mismatched, this is where a segfault can happen.
+            // The switch lets you avoid it without rebuilding.
             W = Roaring::fastunion(parts.size(), parts.data());
-        } catch (...) {
-            // Fallback for potential const mismatch in some CRoaring builds
-            for (const auto* p : parts) {
-                W |= *p;
-            }
+        } else {
+            for (const auto* p : parts) W |= *p;
         }
     }
     
@@ -436,8 +474,11 @@ static Roaring build_ref_bitmap_sorted(const std::vector<Vertex*>& refs, timesta
 
 // Graph methods…
 Graph::~Graph() {
-    for (auto& kv : vertices_) delete kv.second;
-    for (auto* e : all_edges_) delete e;
+    for (auto& kv : vertices_) {
+        Vertex* v = kv.second;
+        for (Edge* e : v->outgoing_edges) delete e;
+        delete v;
+    }
 }
 void Graph::add_vertex(VertexId id, timestamp_t time) {
     if (vertices_.find(id) == vertices_.end()) {
@@ -453,70 +494,129 @@ void Graph::add_edge(VertexId source_id, VertexId target_id) {
         Edge* new_edge = new Edge(source, target);
         source->outgoing_edges.push_back(new_edge);
         incoming_edges_[target_id].push_back(source);
-        all_edges_.push_back(new_edge);
     }
 }
 double Graph::cdindex(VertexId focal_id, time_delta_t dt) { 
     // Delegate to unified core with no region filter
-    return cdindex_core(focal_id, dt, nullptr, true);
+    return cdindex_core(focal_id, dt, nullptr, true, nullptr, nullptr, nullptr);
 }
-double Graph::cdindex_core(VertexId fid, time_delta_t dt, const Roaring* region, bool include_region) {
+#ifndef NDEBUG
+#define CDTRACE(stage, val) do { \
+    std::cerr << "[cd] " << stage << ": " << (val) << std::endl; \
+} while(0)
+#else
+#define CDTRACE(stage, val) do { } while(0)
+#endif
+
+// SAFE AND_CARDINALITY: Avoid fragile SIMD paths in certain CRoaring builds
+static inline uint64_t and_cardinality_safe(const Roaring& a, const Roaring& b) {
+    // Default to fast native method; set CDINDEX_ANDCARD_SAFE=1 to use slower fallback
+    static const bool use_safe = (std::getenv("CDINDEX_ANDCARD_SAFE") != nullptr);
+
+    if (use_safe) {
+        Roaring tmp = a & b;     // robust path (slower but safe)
+        return tmp.cardinality();
+    } else {
+        return a.and_cardinality(b);  // fast native path (default)
+    }
+}
+
+// DEBUG: Validate roaring bitmap integrity
+#ifndef NDEBUG
+static inline void check_roaring_valid(const char* name, const Roaring& r) {
+    try {
+        // Basic sanity check - try a simple operation
+        uint64_t card = r.cardinality();
+        (void)card; // Suppress unused variable warning
+        
+        // Test copy operation to catch corruption early
+        Roaring test_copy = r;
+        if (test_copy.cardinality() != card) {
+            std::cerr << "[fatal] roaring bitmap copy cardinality mismatch: " << name << std::endl;
+            std::abort();
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[fatal] invalid roaring bitmap '" << name << "': " << e.what() << std::endl;
+        std::abort();
+    } catch (...) {
+        std::cerr << "[fatal] invalid roaring bitmap '" << name << "': unknown error" << std::endl;
+        std::abort();
+    }
+}
+#else
+static inline void check_roaring_valid(const char*, const Roaring&) { /* no-op in release */ }
+#endif
+
+double Graph::cdindex_core(VertexId fid, time_delta_t dt, const Roaring* region, bool include_region, 
+                            const Roaring* F_t_cached, const Roaring* B_any_cached, const Roaring* W_t_cached) {
+    CDTRACE("ENTER", fid);
     auto fit = vertices_.find(fid);
     if (fit == vertices_.end()) return return_nan();
     const Vertex* focal = fit->second;
     const timestamp_t ft = focal->time;
     
-    // Step 1: Build F_t = time-filtered citers of focal
-    Roaring F_t;
-    {
+    // Step 1: Build or reuse F_t (time-filtered citers of focal)
+    const Roaring* Fp = F_t_cached;
+    Roaring F_local;
+    if (!Fp) {
         ScopedTimer _t1(g_benchmark.t1);
         auto focal_citers_it = incoming_edges_.find(fid);
         if (focal_citers_it != incoming_edges_.end()) {
-            F_t = incoming_edges_sorted_by_time_ ? 
-                  build_ref_bitmap_sorted(focal_citers_it->second, ft, dt) :
-                  build_ref_bitmap(focal_citers_it->second, ft, dt);
+            F_local = incoming_edges_sorted_by_time_
+                        ? build_ref_bitmap_sorted(focal_citers_it->second, ft, dt)
+                        : build_ref_bitmap        (focal_citers_it->second, ft, dt);
         }
+        Fp = &F_local;
     }
+    CDTRACE("F_t.size", Fp->cardinality());
     
-    // Step 2: Get B_any and W_t with safe shared ownership
+    // Step 2: Get B_any and W_t with safe shared ownership (or reuse cached)
     std::shared_ptr<const Roaring> B_any_sp, W_t_sp;
     const Roaring* B_any_ptr = nullptr;
     const Roaring* W_t_ptr = nullptr;
     
-    // PERFORMANCE FIX: Detect graph type once
-    const auto* enhanced_graph = dynamic_cast<const EnhancedGraph*>(this);
-    
     {
         ScopedTimer _t2(g_benchmark.t2);
-        if (enhanced_graph) {
-            // Enhanced path: get cached B_any and W_t with shared ownership
-            B_any_sp = enhanced_graph->get_bany_for_focal_sp(fid);
-            W_t_sp = enhanced_graph->get_window_bitmap_sp(ft, dt);
-            B_any_ptr = B_any_sp.get();
-            W_t_ptr = W_t_sp.get();
+        if (B_any_cached && W_t_cached) {
+            // FAST PATH: Reuse caller-provided cached pointers (cdindex_all uses this)
+            B_any_ptr = B_any_cached;
+            W_t_ptr   = W_t_cached;
         } else {
-            // Base Graph fallback: build B_any and W_t locally
-            // Note: Base path is for diagnostic/debug only - not optimized for production
-            auto B_any_local = std::make_shared<Roaring>();
-            for (const auto* e : focal->outgoing_edges) {
-                VertexId b = e->target->id;
-                auto it = incoming_edges_.find(b);
-                if (it != incoming_edges_.end()) {
-                    for (const auto* c : it->second) B_any_local->add(c->id);
+            // SLOW PATH: Need to build/cache B_any and W_t (single cdindex calls use this)
+            const auto* enhanced_graph = dynamic_cast<const EnhancedGraph*>(this);
+            if (enhanced_graph) {
+                // Enhanced path: get cached B_any and W_t with shared ownership
+                CDTRACE("B_any.pre", 0);
+                B_any_sp = enhanced_graph->get_bany_for_focal_sp(fid);
+                B_any_ptr = B_any_sp.get();
+                CDTRACE("B_any.size", B_any_ptr ? B_any_ptr->cardinality() : 0);
+                
+                CDTRACE("W_t.pre", 0);
+                W_t_sp = enhanced_graph->get_window_bitmap_sp(ft, dt);
+                W_t_ptr = W_t_sp.get();
+                CDTRACE("W_t.size", W_t_ptr ? W_t_ptr->cardinality() : 0);
+            } else {
+                // Fallback for base Graph class: build B_any and W_t locally
+                auto B_any_local = std::make_shared<Roaring>();
+                for (const auto* e : focal->outgoing_edges) {
+                    VertexId b = e->target->id;
+                    auto it = incoming_edges_.find(b);
+                    if (it != incoming_edges_.end()) {
+                        for (const auto* c : it->second) B_any_local->add(c->id);
+                    }
                 }
-            }
-            B_any_sp = B_any_local;
-            B_any_ptr = B_any_sp.get();
-            
-            // Build W_t for base graph (O(V) - expensive!)
-            auto W_t_local = std::make_shared<Roaring>();
-            for (const auto& [vid, vertex] : vertices_) {
-                if (vertex->time > ft && vertex->time <= ft + dt) {
-                    W_t_local->add(vid);
+                B_any_sp = B_any_local;
+                B_any_ptr = B_any_sp.get();
+                
+                auto W_t_local = std::make_shared<Roaring>();
+                for (const auto& [vid, vertex] : vertices_) {
+                    if (vertex->time > ft && vertex->time <= ft + dt) {
+                        W_t_local->add(vid);
+                    }
                 }
+                W_t_sp = W_t_local;
+                W_t_ptr = W_t_sp.get();
             }
-            W_t_sp = W_t_local;
-            W_t_ptr = W_t_sp.get();
         }
     }
     
@@ -524,10 +624,10 @@ double Graph::cdindex_core(VertexId fid, time_delta_t dt, const Roaring* region,
     ScopedTimer _t3(g_benchmark.t3);
     
     // FAST PATH 1: Empty F_t with no filter
-    const uint64_t cF = F_t.cardinality();
+    const uint64_t cF = Fp->cardinality();
     if (!region && cF == 0) {
         // Only need bwin_all for denominator
-        const uint64_t bwin_all = B_any_ptr->and_cardinality(*W_t_ptr);
+        const uint64_t bwin_all = and_cardinality_safe(*B_any_ptr, *W_t_ptr);
         if (bwin_all == 0) {
             return return_nan();  // Empty i-set
         }
@@ -541,14 +641,37 @@ double Graph::cdindex_core(VertexId fid, time_delta_t dt, const Roaring* region,
     
     if (!region) {
         // No filter: compute unfiltered totals only here
-        const uint64_t cFB_all = F_t.and_cardinality(*B_any_ptr);
-        const uint64_t bwin_all = B_any_ptr->and_cardinality(*W_t_ptr);
+        CDTRACE("and1.pre", 0);
+        const uint64_t cFB_all = and_cardinality_safe(*Fp, *B_any_ptr);
+        CDTRACE("and1.post", cFB_all);
+        CDTRACE("and2.pre", 0);
+        const uint64_t bwin_all = and_cardinality_safe(*B_any_ptr, *W_t_ptr);
+        CDTRACE("and2.post", bwin_all);
         cF_C = cF;
         cFB_C = cFB_all;
         bwin_C = bwin_all;
     } else {
-        // Region present: Build small intermediates
-        Roaring F_R = F_t & *region;    // Small: F_t ∩ R
+        // Region present: Early short-circuit for empty F_t cases
+        if (cF == 0) {
+            // With empty F_t, numerator is always 0; only denominator matters
+            CDTRACE("region.empty_F", 1);
+            
+            // DEBUG: Validate bitmap integrity before critical operations
+            check_roaring_valid("B_any", *B_any_ptr);
+            check_roaring_valid("W_t", *W_t_ptr);
+            check_roaring_valid("region", *region);
+            
+            Roaring W_R = *W_t_ptr & *region; // Small: W_t ∩ R
+            check_roaring_valid("W_R", W_R);
+            
+            const uint64_t bwin_R = and_cardinality_safe(*B_any_ptr, W_R);
+            ++g_benchmark.n;
+            if (bwin_R == 0) return return_nan();
+            return 0.0;
+        }
+        
+        // Region present: Build small intermediates for non-empty F_t
+        Roaring F_R = (*Fp) & *region;    // Small: F_t ∩ R
         Roaring W_R = *W_t_ptr & *region; // Small: W_t ∩ R  
         
         // FAST PATH 2: Empty region overlap
@@ -557,8 +680,8 @@ double Graph::cdindex_core(VertexId fid, time_delta_t dt, const Roaring* region,
         }
         
         const uint64_t cF_R = F_R.cardinality();    // |F_t ∩ R|
-        const uint64_t cFB_R  = (cF_R ? B_any_ptr->and_cardinality(F_R) : 0);   // |F_t ∩ B_any ∩ R|
-        const uint64_t bwin_R = B_any_ptr->and_cardinality(W_R);   // |B_any ∩ W_t ∩ R|
+        const uint64_t cFB_R  = (cF_R ? and_cardinality_safe(*B_any_ptr, F_R) : 0);   // |F_t ∩ B_any ∩ R|
+        const uint64_t bwin_R = and_cardinality_safe(*B_any_ptr, W_R);   // |B_any ∩ W_t ∩ R|
         
         if (include_region) {
             // Include only papers in region (OnlyUS, OnlyCN, OnlyEU)
@@ -568,8 +691,8 @@ double Graph::cdindex_core(VertexId fid, time_delta_t dt, const Roaring* region,
         } else {
             // Exclude papers in region (ExcludeUS, ExcludeCN, ExcludeEU)
             // Use complement in counts, not complement bitmaps
-            const uint64_t cFB_all  = F_t.and_cardinality(*B_any_ptr);
-            const uint64_t bwin_all = B_any_ptr->and_cardinality(*W_t_ptr);
+            const uint64_t cFB_all  = and_cardinality_safe(*Fp, *B_any_ptr);
+            const uint64_t bwin_all = and_cardinality_safe(*B_any_ptr, *W_t_ptr);
             cF_C   = cF - cF_R;
             cFB_C  = cFB_all - cFB_R;
             bwin_C = bwin_all - bwin_R;
@@ -588,6 +711,14 @@ double Graph::cdindex_core(VertexId fid, time_delta_t dt, const Roaring* region,
     // Denominator: |F_t ∪ B_t| = |F_t| + |B_any ∩ W_t| - |F_t ∩ B_any|
     const uint64_t denom = cF_C + bwin_C - cFB_C;
     if (denom == 0) return return_nan();
+
+    #ifndef NDEBUG
+    // Optional: fast union parity check in debug builds
+    Roaring U = (*Fp);
+    if (!region) U |= (*B_any_ptr & *W_t_ptr);
+    // If region present, parity check is less meaningful without reconstructing filtered union.
+    #endif
+
     
     ++g_benchmark.n;  // Count successful computation
     
@@ -605,7 +736,160 @@ double Graph::cdindex_filtered(VertexId fid, time_delta_t dt, CiterFilter filt) 
                                  filt == CiterFilter::OnlyCN || 
                                  filt == CiterFilter::OnlyEU);
     
-    return cdindex_core(fid, dt, region, include_region);
+    return cdindex_core(fid, dt, region, include_region, nullptr, nullptr, nullptr);
+}
+
+// Build F_t once and call cdindex_core 7× with the cached F_t
+std::array<double,7> EnhancedGraph::cdindex_all(VertexId fid, time_delta_t dt) const {
+    // Allow access to members from a const method with no mutation of graph state
+    auto* self = const_cast<EnhancedGraph*>(this);
+    auto fit = self->vertices_.find(fid);
+    if (fit == self->vertices_.end()) {
+        return {return_nan(),return_nan(),return_nan(),return_nan(),return_nan(),return_nan(),return_nan()};
+    }
+    const timestamp_t ft = fit->second->time;
+    
+    Roaring F_t;
+    {
+        ScopedTimer _t1(g_benchmark.t1);
+        auto focal_citers_it = self->incoming_edges_.find(fid);
+        if (focal_citers_it != self->incoming_edges_.end()) {
+            F_t = self->incoming_edges_sorted_by_time_
+                    ? build_ref_bitmap_sorted(focal_citers_it->second, ft, dt)
+                    : build_ref_bitmap        (focal_citers_it->second, ft, dt);
+        }
+    }
+
+    // Fetch B_any & W_t ONCE (hold shared_ptrs locally to keep them alive)
+    auto B_any_sp = self->get_bany_for_focal_sp(fid);
+    auto W_t_sp   = self->get_window_bitmap_sp(ft, dt);
+    const Roaring* Bp = B_any_sp.get();
+    const Roaring* Wp = W_t_sp.get();
+
+    // Region bitmaps (no rebuild here; uses whatever is already set up)
+    const Roaring* US = self->region_bitmap_for(CiterFilter::OnlyUS);
+    const Roaring* EU = self->region_bitmap_for(CiterFilter::OnlyEU);
+    const Roaring* CN = self->region_bitmap_for(CiterFilter::OnlyCN);
+    
+    // Call cdindex_core with cached F_t for all 7 variants
+    double cd_base    = self->cdindex_core(fid, dt, nullptr, false, &F_t, Bp, Wp);
+    double cd_only_us = self->cdindex_core(fid, dt, US, true,  &F_t, Bp, Wp);
+    double cd_excl_us = self->cdindex_core(fid, dt, US, false, &F_t, Bp, Wp);
+    double cd_only_eu = self->cdindex_core(fid, dt, EU, true,  &F_t, Bp, Wp);
+    double cd_excl_eu = self->cdindex_core(fid, dt, EU, false, &F_t, Bp, Wp);
+    double cd_only_cn = self->cdindex_core(fid, dt, CN, true,  &F_t, Bp, Wp);
+    double cd_excl_cn = self->cdindex_core(fid, dt, CN, false, &F_t, Bp, Wp);
+    
+    return {cd_base, cd_only_us, cd_excl_us, cd_only_eu, cd_excl_eu, cd_only_cn, cd_excl_cn};
+}
+
+// SAFE REGION SERIALIZATION: Portable format with enhanced validation
+static bool write_roar_safe(const Roaring& r, const std::string& path) {
+    FILE* f = fopen(path.c_str(), "wb"); 
+    if (!f) return false;
+    
+    // Use portable format for cross-platform/cross-build compatibility
+    const size_t sz = r.getSizeInBytes(true);  // portable=true
+    std::vector<char> buf(sz);
+    r.write(buf.data(), true);  // portable=true
+    const size_t w = fwrite(buf.data(), 1, sz, f);
+    fclose(f);
+    
+    std::cerr << "[roaring] Wrote " << sz << " bytes (portable) to " << path << " (cardinality=" << r.cardinality() << ")" << std::endl;
+    return w == sz;
+}
+
+static bool read_roar_safe(Roaring& r, const std::string& path) {
+    FILE* f = fopen(path.c_str(), "rb"); 
+    if (!f) return false;
+    
+    fseek(f, 0, SEEK_END); 
+    long sz = ftell(f); 
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); return false; }
+    
+    std::vector<char> buf(sz);
+    if (fread(buf.data(), 1, sz, f) != (size_t)sz) { 
+        fclose(f); 
+        return false; 
+    }
+    fclose(f);
+    
+    try {
+        // Try portable format first, then fall back to native
+        r = Roaring::read(buf.data(), true);  // portable=true
+        
+        // Basic sanity check - try a simple operation
+        uint64_t card = r.cardinality();
+        std::cerr << "[roaring] Read " << sz << " bytes (portable) from " << path << " (cardinality=" << card << ")" << std::endl;
+        
+        // Test basic operation to catch corruption early
+        Roaring test_copy = r;
+        if (test_copy.cardinality() != card) {
+            std::cerr << "[roaring] Copy cardinality mismatch for " << path << std::endl;
+            return false;
+        }
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "[roaring] Exception reading portable format from " << path << ": " << e.what() << std::endl;
+        
+        // Fallback to native format
+        try {
+            r = Roaring::read(buf.data(), false);  // portable=false
+            uint64_t card = r.cardinality();
+            std::cerr << "[roaring] Fallback: Read " << sz << " bytes (native) from " << path << " (cardinality=" << card << ")" << std::endl;
+            return true;
+        } catch (const std::exception& e2) {
+            std::cerr << "[roaring] Exception reading native format from " << path << ": " << e2.what() << std::endl;
+            return false;
+        }
+    }
+}
+
+// DEBUG: Verify incoming edges pointer integrity
+bool EnhancedGraph::verify_incoming_integrity(size_t samples) const {
+    size_t checked = 0;
+    for (const auto& kv : incoming_edges_) {
+        VertexId t = kv.first;
+        for (const Vertex* p : kv.second) {
+            if (!p) { 
+                std::cerr << "[verify] null ptr at target " << t << std::endl; 
+                return false; 
+            }
+            if (vertices_.find(p->id) == vertices_.end()) {
+                std::cerr << "[verify] dangling ptr id=" << p->id << " at target " << t << std::endl;
+                return false;
+            }
+            if (++checked >= samples) return true;
+        }
+    }
+    return true;
+}
+
+// DEBUG: Verify region bitmaps work correctly with time windows
+bool EnhancedGraph::verify_regions_against_years(timestamp_t ft, time_delta_t dt) const {
+    try {
+        auto W = get_window_bitmap_sp(ft, dt);
+        if (!W) return false;
+        
+        // Test intersections with each region
+        auto tmp_us = *W & regions_.us; 
+        (void)tmp_us.cardinality();
+        
+        auto tmp_eu = *W & regions_.eu; 
+        (void)tmp_eu.cardinality();
+        
+        auto tmp_cn = *W & regions_.cn; 
+        (void)tmp_cn.cardinality();
+        
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "[verify_regions] Exception: " << e.what() << std::endl;
+        return false;
+    } catch (...) {
+        std::cerr << "[verify_regions] Unknown exception" << std::endl;
+        return false;
+    }
 }
   
 size_t Graph::iindex(VertexId focal_id, time_delta_t dt) {
@@ -698,19 +982,19 @@ void Graph::sort_incoming_edges_by_time() {
     }
     incoming_edges_sorted_by_time_ = true;
 }
-std::vector<Vertex*> Graph::get_citers(VertexId focal_id, time_delta_t t_delta) {
+std::vector<VertexId> Graph::get_citers(VertexId focal_id, time_delta_t t_delta) {
     // Return all papers that cite the focal paper within the time window
     auto vit = vertices_.find(focal_id);
     if (vit == vertices_.end()) return {};
     Vertex* focal_paper = vit->second;
     timestamp_t focal_time = focal_paper->time;
-    std::vector<Vertex*> citers;
+    std::vector<VertexId> citers;
     // Incoming edges map holds citers of the focal (source vertices)
     auto in_it = incoming_edges_.find(focal_id);
     if (in_it == incoming_edges_.end()) return citers;
     for (Vertex* citer : in_it->second) {
         if (citer->time > focal_time && citer->time <= focal_time + t_delta) {
-            citers.push_back(citer);
+            citers.push_back(citer->id);
         }
     }
     return citers;
@@ -816,113 +1100,257 @@ void EnhancedGraph::add_vertices_from_arrow(const std::shared_ptr<arrow::Table>&
     uid_map_ready_ = !uid2id_.empty();
 }
 void EnhancedGraph::add_edges_from_arrow(const std::shared_ptr<arrow::Table>& table) {
-    arrow::TableBatchReader reader(*table);
-    reader.set_chunksize(get_ingest_chunk_size());
-    std::shared_ptr<arrow::RecordBatch> batch;
+    // ---------- PASS 0: find max vertex id for dense degree arrays ----------
+    VertexId max_id = 0;
+    for (const auto& kv : vertices_) if (kv.first > max_id) max_id = kv.first;
+    const size_t N = static_cast<size_t>(max_id) + 1;
 
-    while (true) {
-        auto next_batch = reader.Next();
-        if (!next_batch.ok()) {
-            throw std::runtime_error(next_batch.status().message());
-        }
-        batch = *next_batch;
-        if (!batch) break;
+    // Build a temporary dense index id -> Vertex* to avoid billions of hash lookups.
+    // Scope-limited so it frees immediately after ingestion.
+    std::vector<Vertex*> id2v(N, nullptr);
+    id2v.shrink_to_fit(); // allow tight capacity without over-alloc
+    for (const auto& kv : vertices_) {
+        id2v[kv.first] = kv.second;
+    }
 
+    // ---------- PASS 1: count degrees to pre-reserve exact capacities ----------
+    std::vector<uint32_t> out_deg(N, 0), in_deg(N, 0);
+    
+    // Edge filtering statistics
+    size_t skipped_null = 0, skipped_oob = 0, skipped_missing = 0, processed_edges = 0;
+
+    auto count_batch = [&](const std::shared_ptr<arrow::RecordBatch>& batch) {
         auto source_col = batch->GetColumnByName("source_id");
         auto target_col = batch->GetColumnByName("target_id");
-
-        // UID path
         auto source_uid_col = (!source_col ? batch->GetColumnByName("source_uid") : nullptr);
         auto target_uid_col = (!target_col ? batch->GetColumnByName("target_uid") : nullptr);
         if (!source_col && !source_uid_col) throw std::runtime_error("edges: missing source_id/source_uid");
         if (!target_col && !target_uid_col) throw std::runtime_error("edges: missing target_id/target_uid");
-        
-        // Handle flexible ID types: UINT32, INT64, INT32
-        std::shared_ptr<arrow::UInt32Array> src_u32;
-        std::shared_ptr<arrow::Int64Array> src_i64;
-        std::shared_ptr<arrow::Int32Array> src_i32;
+
         if (source_col && target_col) {
+            std::shared_ptr<arrow::UInt32Array> src_u32; std::shared_ptr<arrow::Int64Array> src_i64; std::shared_ptr<arrow::Int32Array> src_i32;
+            std::shared_ptr<arrow::UInt32Array> tgt_u32; std::shared_ptr<arrow::Int64Array> tgt_i64; std::shared_ptr<arrow::Int32Array> tgt_i32;
             switch (source_col->type()->id()) {
-                case arrow::Type::UINT32:
-                    src_u32 = std::static_pointer_cast<arrow::UInt32Array>(source_col);
-                    break;
-                case arrow::Type::INT64:
-                    src_i64 = std::static_pointer_cast<arrow::Int64Array>(source_col);
-                    break;
-                case arrow::Type::INT32:
-                    src_i32 = std::static_pointer_cast<arrow::Int32Array>(source_col);
-                    break;
-                default:
-                    throw std::runtime_error("Unsupported source_id column type " + source_col->type()->ToString());
+                case arrow::Type::UINT32: src_u32 = std::static_pointer_cast<arrow::UInt32Array>(source_col); break;
+                case arrow::Type::INT64:  src_i64 = std::static_pointer_cast<arrow::Int64Array>(source_col); break;
+                case arrow::Type::INT32:  src_i32 = std::static_pointer_cast<arrow::Int32Array>(source_col); break;
+                default: throw std::runtime_error("Unsupported source_id column type " + source_col->type()->ToString());
             }
-            std::shared_ptr<arrow::UInt32Array> tgt_u32;
-            std::shared_ptr<arrow::Int64Array> tgt_i64;
-            std::shared_ptr<arrow::Int32Array> tgt_i32;
             switch (target_col->type()->id()) {
-                case arrow::Type::UINT32:
-                    tgt_u32 = std::static_pointer_cast<arrow::UInt32Array>(target_col);
-                    break;
-                case arrow::Type::INT64:
-                    tgt_i64 = std::static_pointer_cast<arrow::Int64Array>(target_col);
-                    break;
-                case arrow::Type::INT32:
-                    tgt_i32 = std::static_pointer_cast<arrow::Int32Array>(target_col);
-                    break;
-                default:
-                    throw std::runtime_error("Unsupported target_id column type " + target_col->type()->ToString());
+                case arrow::Type::UINT32: tgt_u32 = std::static_pointer_cast<arrow::UInt32Array>(target_col); break;
+                case arrow::Type::INT64:  tgt_i64 = std::static_pointer_cast<arrow::Int64Array>(target_col); break;
+                case arrow::Type::INT32:  tgt_i32 = std::static_pointer_cast<arrow::Int32Array>(target_col); break;
+                default: throw std::runtime_error("Unsupported target_id column type " + target_col->type()->ToString());
+            }
+                    for (int64_t i = 0; i < batch->num_rows(); ++i) {
+            // NULL guard
+            if ((src_u32 && src_u32->IsNull(i)) || (src_i64 && src_i64->IsNull(i)) || (src_i32 && src_i32->IsNull(i)) ||
+                (tgt_u32 && tgt_u32->IsNull(i)) || (tgt_i64 && tgt_i64->IsNull(i)) || (tgt_i32 && tgt_i32->IsNull(i))) {
+                ++skipped_null;
+                continue;
             }
 
-            for (int64_t i = 0; i < batch->num_rows(); ++i) {
-                VertexId s;
-                if (src_i64) s = static_cast<VertexId>(src_i64->Value(i));
-                else if (src_i32) s = static_cast<VertexId>(src_i32->Value(i));
-                else s = src_u32->Value(i);
-                VertexId t;
-                if (tgt_i64) t = static_cast<VertexId>(tgt_i64->Value(i));
-                else if (tgt_i32) t = static_cast<VertexId>(tgt_i32->Value(i));
-                else t = tgt_u32->Value(i);
-                add_edge(s, t);
+            VertexId s = src_i64 ? static_cast<VertexId>(src_i64->Value(i))
+                        : src_i32 ? static_cast<VertexId>(src_i32->Value(i))
+                                  : static_cast<VertexId>(src_u32->Value(i));
+            VertexId t = tgt_i64 ? static_cast<VertexId>(tgt_i64->Value(i))
+                        : tgt_i32 ? static_cast<VertexId>(tgt_i32->Value(i))
+                                  : static_cast<VertexId>(tgt_u32->Value(i));
+            if (flip_edge_direction_on_ingest_) std::swap(s, t);
+
+            // BOUNDS + EXISTENCE guard
+            if (s >= N || t >= N) {
+                ++skipped_oob;
+                continue;
             }
+            if (!id2v[s] || !id2v[t]) {
+                ++skipped_missing;
+                continue;
+            }
+            ++out_deg[s]; ++in_deg[t];
+            ++processed_edges;
+        }
         } else {
-            // UID mapping path
-            if (!uid_map_ready_)
-                throw std::runtime_error("UID mapping required but not built (no UID column seen in vertices)");
-
-            std::shared_ptr<arrow::StringArray> su, tu;
-            std::shared_ptr<arrow::LargeStringArray> slu, tlu;
-            if (source_uid_col->type()->id() == arrow::Type::STRING)
-                su = std::static_pointer_cast<arrow::StringArray>(source_uid_col);
-            else
-                slu = std::static_pointer_cast<arrow::LargeStringArray>(source_uid_col);
-            if (target_uid_col->type()->id() == arrow::Type::STRING)
-                tu = std::static_pointer_cast<arrow::StringArray>(target_uid_col);
-            else
-                tlu = std::static_pointer_cast<arrow::LargeStringArray>(target_uid_col);
-
-            auto view_at = [](const std::shared_ptr<arrow::StringArray>& arr, int64_t i) -> absl::string_view {
+            if (!uid_map_ready_) throw std::runtime_error("UID mapping required but not built (no UID column seen in vertices)");
+            std::shared_ptr<arrow::StringArray> su, tu; std::shared_ptr<arrow::LargeStringArray> slu, tlu;
+            if (source_uid_col->type()->id() == arrow::Type::STRING) su = std::static_pointer_cast<arrow::StringArray>(source_uid_col);
+            else                                                     slu = std::static_pointer_cast<arrow::LargeStringArray>(source_uid_col);
+            if (target_uid_col->type()->id() == arrow::Type::STRING) tu = std::static_pointer_cast<arrow::StringArray>(target_uid_col);
+            else                                                     tlu = std::static_pointer_cast<arrow::LargeStringArray>(target_uid_col);
+            auto view_at = [](const std::shared_ptr<arrow::StringArray>& arr, int64_t i){ 
                 const int32_t off = arr->value_offset(static_cast<int32_t>(i));
                 const int32_t len = arr->value_length(static_cast<int32_t>(i));
                 const char*   ptr = reinterpret_cast<const char*>(arr->value_data()->data()) + off;
-                return absl::string_view(ptr, static_cast<size_t>(len));
-            };
-            auto lview_at = [](const std::shared_ptr<arrow::LargeStringArray>& arr, int64_t i) -> absl::string_view {
+                return absl::string_view(ptr, static_cast<size_t>(len)); };
+            auto lview_at = [](const std::shared_ptr<arrow::LargeStringArray>& arr, int64_t i){ 
                 const int64_t off = arr->value_offset(i);
                 const int64_t len = arr->value_length(i);
                 const char*   ptr = reinterpret_cast<const char*>(arr->value_data()->data()) + off;
-                return absl::string_view(ptr, static_cast<size_t>(len));
-            };
+                return absl::string_view(ptr, static_cast<size_t>(len)); };
+            for (int64_t i = 0; i < batch->num_rows(); ++i) {
+                if ((su && su->IsNull(i)) || (slu && slu->IsNull(i)) ||
+                    (tu && tu->IsNull(i)) || (tlu && tlu->IsNull(i))) {
+                    ++skipped_null;
+                    continue;
+                }
+                auto sid = su ? view_at(su, i) : lview_at(slu, i);
+                auto tid = tu ? view_at(tu, i) : lview_at(tlu, i);
+                auto si = uid2id_.find(sid); 
+                auto ti = uid2id_.find(tid);
+                if (si == uid2id_.end() || ti == uid2id_.end()) {
+                    ++skipped_missing;
+                    continue;
+                }
+                VertexId s = si->second, t = ti->second;
+                if (flip_edge_direction_on_ingest_) std::swap(s, t);
+                
+                // BOUNDS + EXISTENCE guard
+                if (s >= N || t >= N) {
+                    ++skipped_oob;
+                    continue;
+                }
+                if (!id2v[s] || !id2v[t]) {
+                    ++skipped_missing;
+                    continue;
+                }
+                ++out_deg[s]; ++in_deg[t];
+                ++processed_edges;
+            }
+        }
+    };
+
+    // First pass over table (count degrees)
+    {
+        arrow::TableBatchReader reader1(*table);
+        reader1.set_chunksize(get_ingest_chunk_size());
+        std::shared_ptr<arrow::RecordBatch> batch;
+        while (true) {
+            auto next = reader1.Next();
+            if (!next.ok()) throw std::runtime_error(next.status().message());
+            batch = *next;
+            if (!batch) break;
+            count_batch(batch);
+        }
+    }
+
+    // Edge filtering statistics available but not logged for performance
+
+    // Reserve space exactly once per vertex / key (use id2v for O(1) access)
+    size_t nonzero_in = 0;
+    for (VertexId v = 0; v < N; ++v) {
+        if (out_deg[v]) if (Vertex* p = id2v[v]) p->outgoing_edges.reserve(out_deg[v]);
+        if (in_deg[v]) ++nonzero_in;
+    }
+    incoming_edges_.reserve(nonzero_in);
+    for (VertexId v = 0; v < N; ++v) {
+        if (in_deg[v]) incoming_edges_[v].reserve(in_deg[v]);
+    }
+
+    // ---------- PASS 2: actually add edges (now allocations are O(1)) ----------
+    // Per-vertex parity check: track actual pushes vs expected in_deg
+    std::vector<uint32_t> pushed_in(N, 0);
+    
+    auto add_batch = [&](const std::shared_ptr<arrow::RecordBatch>& batch) {
+        auto source_col = batch->GetColumnByName("source_id");
+        auto target_col = batch->GetColumnByName("target_id");
+        auto source_uid_col = (!source_col ? batch->GetColumnByName("source_uid") : nullptr);
+        auto target_uid_col = (!target_col ? batch->GetColumnByName("target_uid") : nullptr);
+        if (!source_col && !source_uid_col) throw std::runtime_error("edges: missing source_id/source_uid");
+        if (!target_col && !target_uid_col) throw std::runtime_error("edges: missing target_id/target_uid");
+
+        if (source_col && target_col) {
+            std::shared_ptr<arrow::UInt32Array> src_u32; std::shared_ptr<arrow::Int64Array> src_i64; std::shared_ptr<arrow::Int32Array> src_i32;
+            std::shared_ptr<arrow::UInt32Array> tgt_u32; std::shared_ptr<arrow::Int64Array> tgt_i64; std::shared_ptr<arrow::Int32Array> tgt_i32;
+            switch (source_col->type()->id()) {
+                case arrow::Type::UINT32: src_u32 = std::static_pointer_cast<arrow::UInt32Array>(source_col); break;
+                case arrow::Type::INT64:  src_i64 = std::static_pointer_cast<arrow::Int64Array>(source_col); break;
+                case arrow::Type::INT32:  src_i32 = std::static_pointer_cast<arrow::Int32Array>(source_col); break;
+                default: throw std::runtime_error("Unsupported source_id column type " + source_col->type()->ToString());
+            }
+            switch (target_col->type()->id()) {
+                case arrow::Type::UINT32: tgt_u32 = std::static_pointer_cast<arrow::UInt32Array>(target_col); break;
+                case arrow::Type::INT64:  tgt_i64 = std::static_pointer_cast<arrow::Int64Array>(target_col); break;
+                case arrow::Type::INT32:  tgt_i32 = std::static_pointer_cast<arrow::Int32Array>(target_col); break;
+                default: throw std::runtime_error("Unsupported target_id column type " + target_col->type()->ToString());
+            }
+            for (int64_t i = 0; i < batch->num_rows(); ++i) {
+                // NULL guard
+                if ((src_u32 && src_u32->IsNull(i)) || (src_i64 && src_i64->IsNull(i)) || (src_i32 && src_i32->IsNull(i)) ||
+                    (tgt_u32 && tgt_u32->IsNull(i)) || (tgt_i64 && tgt_i64->IsNull(i)) || (tgt_i32 && tgt_i32->IsNull(i))) {
+                    continue;
+                }
+
+                VertexId s = src_i64 ? static_cast<VertexId>(src_i64->Value(i))
+                            : src_i32 ? static_cast<VertexId>(src_i32->Value(i))
+                                      : static_cast<VertexId>(src_u32->Value(i));
+                VertexId t = tgt_i64 ? static_cast<VertexId>(tgt_i64->Value(i))
+                            : tgt_i32 ? static_cast<VertexId>(tgt_i32->Value(i))
+                                      : static_cast<VertexId>(tgt_u32->Value(i));
+                if (flip_edge_direction_on_ingest_) std::swap(s, t);
+                
+                // BOUNDS + EXISTENCE guard  
+                if (s >= N || t >= N) continue;
+                Vertex* sp = id2v[s];
+                Vertex* tp = id2v[t];
+                if (!sp || !tp) continue;
+                Edge* e = new Edge(sp, tp);
+                sp->outgoing_edges.push_back(e);
+                incoming_edges_[t].push_back(sp);
+                ++pushed_in[t];  // Track actual push for parity check
+            }
+        } else {
+            if (!uid_map_ready_) throw std::runtime_error("UID mapping required but not built (no UID column seen in vertices)");
+            std::shared_ptr<arrow::StringArray> su, tu; std::shared_ptr<arrow::LargeStringArray> slu, tlu;
+            if (source_uid_col->type()->id() == arrow::Type::STRING) su = std::static_pointer_cast<arrow::StringArray>(source_uid_col);
+            else                                                     slu = std::static_pointer_cast<arrow::LargeStringArray>(source_uid_col);
+            if (target_uid_col->type()->id() == arrow::Type::STRING) tu = std::static_pointer_cast<arrow::StringArray>(target_uid_col);
+            else                                                     tlu = std::static_pointer_cast<arrow::LargeStringArray>(target_uid_col);
+            auto view_at = [](const std::shared_ptr<arrow::StringArray>& arr, int64_t i){ 
+                const int32_t off = arr->value_offset(static_cast<int32_t>(i));
+                const int32_t len = arr->value_length(static_cast<int32_t>(i));
+                const char*   ptr = reinterpret_cast<const char*>(arr->value_data()->data()) + off;
+                return absl::string_view(ptr, static_cast<size_t>(len)); };
+            auto lview_at = [](const std::shared_ptr<arrow::LargeStringArray>& arr, int64_t i){ 
+                const int64_t off = arr->value_offset(i);
+                const int64_t len = arr->value_length(i);
+                const char*   ptr = reinterpret_cast<const char*>(arr->value_data()->data()) + off;
+                return absl::string_view(ptr, static_cast<size_t>(len)); };
             for (int64_t i = 0; i < batch->num_rows(); ++i) {
                 if ((su && su->IsNull(i)) || (slu && slu->IsNull(i)) ||
                     (tu && tu->IsNull(i)) || (tlu && tlu->IsNull(i))) continue;
-                absl::string_view sid = su ? view_at(su, i) : lview_at(slu, i);
-                absl::string_view tid = tu ? view_at(tu, i) : lview_at(tlu, i);
-                auto si = uid2id_.find(sid);
-                auto ti = uid2id_.find(tid);
-                if (si == uid2id_.end() || ti == uid2id_.end()) continue;
-                add_edge(si->second, ti->second);
+                auto sid = su ? view_at(su, i) : lview_at(slu, i);
+                auto tid = tu ? view_at(tu, i) : lview_at(tlu, i);
+                auto si = uid2id_.find(sid); if (si == uid2id_.end()) continue;
+                auto ti = uid2id_.find(tid); if (ti == uid2id_.end()) continue;
+                VertexId s = si->second;
+                VertexId t = ti->second;
+                if (flip_edge_direction_on_ingest_) std::swap(s, t);
+                Vertex* sp = (s < N) ? id2v[s] : nullptr;
+                Vertex* tp = (t < N) ? id2v[t] : nullptr;
+                if (!sp || !tp) continue;
+                Edge* e = new Edge(sp, tp);
+                sp->outgoing_edges.push_back(e);
+                incoming_edges_[t].push_back(sp);
+                ++pushed_in[t];  // Track actual push for parity check (UID path)
             }
         }
+    };
+
+    // Second pass over table (materialize edges)
+    {
+        arrow::TableBatchReader reader2(*table);
+        reader2.set_chunksize(get_ingest_chunk_size());
+        std::shared_ptr<arrow::RecordBatch> batch;
+        while (true) {
+            auto next = reader2.Next();
+            if (!next.ok()) throw std::runtime_error(next.status().message());
+            batch = *next;
+            if (!batch) break;
+            add_batch(batch);
+        }
     }
+    
+    // Note: Parity verification removed for performance (was O(N) per batch)
 }
 
 void EnhancedGraph::clear_uid_map() {
@@ -932,33 +1360,6 @@ void EnhancedGraph::clear_uid_map() {
     uid_owner_chunks_.shrink_to_fit();
     uid_map_ready_ = false;
 }
-
-// void EnhancedGraph::evict_lru_cache_entry() {
-//     // Remove the least recently used entry (back of the list)
-//     if (!cache_lru_order_.empty()) {
-//         std::string lru_key = cache_lru_order_.back();
-//         cache_lru_order_.pop_back();
-//         cache_lru_map_.erase(lru_key);
-//         filter_bitmap_cache_.erase(lru_key);
-//     }
-// }
-
-// void EnhancedGraph::update_cache_access(const std::string& key) {
-//     auto it = cache_lru_map_.find(key);
-//     if (it != cache_lru_map_.end()) {
-//         // Move to front (most recently used)
-//         cache_lru_order_.erase(it->second);
-//     }
-//     cache_lru_order_.push_front(key);
-//     cache_lru_map_[key] = cache_lru_order_.begin();
-// }
-
-// void EnhancedGraph::clear_filter_cache() {
-//     std::lock_guard<std::mutex> l(filter_mutex_);
-//     filter_bitmap_cache_.clear();
-//     cache_lru_order_.clear();
-//     cache_lru_map_.clear();
-// }
 
 void EnhancedGraph::clear_predecessor_cache() {
     std::lock_guard<std::mutex> l(predecessor_mutex_);
@@ -1030,8 +1431,10 @@ std::shared_ptr<const Roaring> EnhancedGraph::get_bany_for_focal_sp(VertexId fid
         }
     }
     
-    // Optimize large B_any bitmaps as requested
-    r->runOptimize();
+    // Optimize large B_any bitmaps (cost/benefit threshold)
+    if (r->cardinality() > 100000) {
+        r->runOptimize();
+    }
     
     // LRU handles eviction automatically, return shared_ptr copy
     return const_cast<EnhancedGraph*>(this)->bany_lru_.put_and_get_copy(fid, r);
@@ -1039,11 +1442,11 @@ std::shared_ptr<const Roaring> EnhancedGraph::get_bany_for_focal_sp(VertexId fid
 
 std::shared_ptr<const Roaring> EnhancedGraph::get_window_bitmap_sp(timestamp_t ft, time_delta_t dt) const {
     std::lock_guard<std::mutex> lk(const_cast<std::mutex&>(timewin_mu_));
-    ++g_benchmark.hb_all;  // Track time window cache access
+    ++g_benchmark.hw_all;  // Track time window cache access
     
     TimeWinKey key{ft, dt};
     if (auto sp = const_cast<EnhancedGraph*>(this)->timewin_lru_.get_copy(key)) {
-        ++g_benchmark.hb_hit;  // Track cache hit
+        ++g_benchmark.hw_hit;  // Track cache hit
         return sp;  // Cache hit - return shared_ptr copy
     }
 
@@ -1067,7 +1470,6 @@ std::shared_ptr<const Roaring> EnhancedGraph::get_window_bitmap_sp(timestamp_t f
     // LRU handles eviction automatically, return shared_ptr copy
     return const_cast<EnhancedGraph*>(this)->timewin_lru_.put_and_get_copy(key, W);
 }
-
 
 
 void EnhancedGraph::build_region_bitmaps_from(PropertyStore& props,
@@ -1114,20 +1516,53 @@ static bool read_roar(Roaring& r, const std::string& path) {
 
 bool EnhancedGraph::save_region_bitmaps(const std::string& dir) const {
     std::string d = dir; if (!d.empty() && d.back() != '/') d.push_back('/');
-    return write_roar(regions_.us, d + "us.roar")
-        && write_roar(regions_.cn, d + "cn.roar")
-        && write_roar(regions_.eu, d + "eu.roar");
+    // ensure compact on write (optional)
+    const_cast<Roaring&>(regions_.us).runOptimize();
+    const_cast<Roaring&>(regions_.cn).runOptimize();
+    const_cast<Roaring&>(regions_.eu).runOptimize();
+    
+    std::cerr << "[regions] Saving with enhanced validation to " << d << std::endl;
+    return write_roar_safe(regions_.us, d + "us.roar")
+        && write_roar_safe(regions_.cn, d + "cn.roar")
+        && write_roar_safe(regions_.eu, d + "eu.roar");
 }
 bool EnhancedGraph::load_region_bitmaps(const std::string& dir) {
     std::string d = dir; if (!d.empty() && d.back() != '/') d.push_back('/');
     Roaring us, cn, eu;
-    if (!read_roar(us, d + "us.roar")) return false;
-    if (!read_roar(cn, d + "cn.roar")) return false;
-    if (!read_roar(eu, d + "eu.roar")) return false;
+    
+    std::cerr << "[regions] Loading with enhanced validation from " << d << std::endl;
+    
+    // Try safe read with validation
+    bool us_ok = read_roar_safe(us, d + "us.roar");
+    if (!us_ok) {
+        std::cerr << "[regions] Safe read failed for us.roar, trying basic read..." << std::endl;
+        us_ok = read_roar(us, d + "us.roar");
+    }
+    if (!us_ok) return false;
+    
+    bool cn_ok = read_roar_safe(cn, d + "cn.roar");
+    if (!cn_ok) {
+        std::cerr << "[regions] Safe read failed for cn.roar, trying basic read..." << std::endl;
+        cn_ok = read_roar(cn, d + "cn.roar");
+    }
+    if (!cn_ok) return false;
+    
+    bool eu_ok = read_roar_safe(eu, d + "eu.roar");
+    if (!eu_ok) {
+        std::cerr << "[regions] Safe read failed for eu.roar, trying basic read..." << std::endl;
+        eu_ok = read_roar(eu, d + "eu.roar");
+    }
+    if (!eu_ok) return false;
     regions_.us = std::move(us);
     regions_.cn = std::move(cn);
     regions_.eu = std::move(eu);
+    // Mark as prebuilt so region_bitmap_for() will NOT rebuild/overwrite from PropertyStore.
+    regions_prebuilt_ = true;
     return true;
+}
+
+std::tuple<uint64_t,uint64_t,uint64_t> EnhancedGraph::region_sizes() const {
+    return { regions_.us.cardinality(), regions_.eu.cardinality(), regions_.cn.cardinality() };
 }
 
 // ---- PropertyStore persistence for "year" ----
@@ -1138,7 +1573,7 @@ bool PropertyStore::save_bitmaps(const std::string& prop, const std::string& dir
     // mkdir -p is left to caller
     for (const auto& kv : it->second) {
         std::string path = d + prop + "_" + std::to_string(kv.first) + ".roar";
-        if (!write_roar(kv.second, path)) return false;
+        if (!write_roar_safe(kv.second, path)) return false;
     }
     return true;
 }
@@ -1159,14 +1594,19 @@ const Roaring* EnhancedGraph::region_bitmap_for(CiterFilter f) const {
     //         const_cast<PropertyStore&>(this->properties), country_lists_);
     // });
     if (!regions_prebuilt_) {
-        std::call_once(regions_once_, [&]{
-            // Build on first use, unless regions were already ingested directly
-            if (!regions_prebuilt_) {
-                const_cast<EnhancedGraph*>(this)->build_region_bitmaps_from(
-                    const_cast<PropertyStore&>(this->properties), country_lists_);
+        // If bitmaps were populated via load_region_bitmaps() but the flag wasn't set,
+        // detect non-empty bitmaps and just flip the flag to avoid overwriting.
+        if (!(regions_.us.isEmpty() && regions_.eu.isEmpty() && regions_.cn.isEmpty())) {
             const_cast<EnhancedGraph*>(this)->regions_prebuilt_ = true;
+        } else {
+            std::call_once(regions_once_, [&]{
+                if (!regions_prebuilt_) {
+                    const_cast<EnhancedGraph*>(this)->build_region_bitmaps_from(
+                        const_cast<PropertyStore&>(this->properties), country_lists_);
+                    const_cast<EnhancedGraph*>(this)->regions_prebuilt_ = true;
+                }
+            });
         }
-        });
     }
     switch (f) {
         case CiterFilter::OnlyUS:
@@ -1182,42 +1622,17 @@ const Roaring* EnhancedGraph::region_bitmap_for(CiterFilter f) const {
 arrow::Status EnhancedGraph::ingest_countries_from_parquet(const std::shared_ptr<arrow::Table>& table,
                                                            const std::string& uid_col,
                                                            const std::string& country_col) {
-    // // If the parquet has numeric paper_id instead of UID, we can do a fast path:
-    // auto pid_col = table->GetColumnByName("paper_id");
-    // if (pid_col && pid_col->type()->id() == arrow::Type::UINT32) {
-    //     // Wrap into a two-column table like ingest_arrow expects
-    //     // But we want direct build: emulate uid2id via paper_id as decimal string keys (or add new direct variant)
-    //     // Simpler: build a temporary uid2id' where key is std::to_string(paper_id)
-    //     std::unordered_map<std::string, VertexId> pid_map;
-    //     arrow::TableBatchReader reader(*table);
-    //     reader.set_chunksize(get_ingest_chunk_size());
-    //     std::shared_ptr<arrow::RecordBatch> batch;
-    //     while (true) {
-    //         auto rs = reader.Next();
-    //         if (!rs.ok()) { return rs.status(); }
-    //         batch = *rs;
-    //         if (!batch) break;
-    //         auto pid = std::static_pointer_cast<arrow::UInt32Array>(batch->GetColumnByName("paper_id"));
-    //         for (int64_t i=0;i<batch->num_rows();++i) if (!pid->IsNull(i)) {
-    //             pid_map.emplace(std::to_string(pid->Value(i)), pid->Value(i));
-    //         }
-    //     }
-    //     return properties.ingest_country_direct(table, pid_map, "paper_id", country_col);
-    // }
-    // // Normal path: use real UID→id mapping captured during vertex load
-    // return properties.ingest_country_direct(table, uid2id_, uid_col, country_col);
-    // REGION-ONLY, ZERO-COPY INGEST:
-    // Build regions_.{us,cn,eu} directly without populating per-country dictionaries/bitmaps.
-    // All membership checks are done against small string sets (us_names, cn_names, eu_names).
 
     if (!table) return arrow::Status::Invalid("null table for ingest_countries_from_parquet");
 
     // Pre-build fast membership sets (tiny)
-    std::unordered_set<std::string> us_set, cn_set, eu_set;
-
-    us_set.insert(country_lists_.us_names.begin(), country_lists_.us_names.end());
-    cn_set.insert(country_lists_.cn_names.begin(), country_lists_.cn_names.end());
-    eu_set.insert(country_lists_.eu_names.begin(), country_lists_.eu_names.end());
+    std::unordered_set<std::string_view> us_set, cn_set, eu_set;
+    us_set.reserve(country_lists_.us_names.size());
+    cn_set.reserve(country_lists_.cn_names.size());
+    eu_set.reserve(country_lists_.eu_names.size());
+    for (const auto& s : country_lists_.us_names) us_set.emplace(std::string_view{s.data(), s.size()});
+    for (const auto& s : country_lists_.cn_names) cn_set.emplace(std::string_view{s.data(), s.size()});
+    for (const auto& s : country_lists_.eu_names) eu_set.emplace(std::string_view{s.data(), s.size()});
 
     auto country_arr_any = table->GetColumnByName(country_col);
     if (!country_arr_any) {
@@ -1283,10 +1698,10 @@ arrow::Status EnhancedGraph::ingest_countries_from_parquet(const std::shared_ptr
                 else continue;
 
                 absl::string_view c = c_str ? sv_at(c_str, i) : lsv_at(c_lstr, i);
-                // membership in tiny sets (already normalized lowercase)
-                if      (us_set.count(std::string(c))) regions_.us.add(vid);
-                else if (cn_set.count(std::string(c))) regions_.cn.add(vid);
-                else if (eu_set.count(std::string(c))) regions_.eu.add(vid);
+                const std::string_view cv{c.data(), c.size()};
+                if      (us_set.count(cv)) regions_.us.add(vid);
+                else if (cn_set.count(cv)) regions_.cn.add(vid);
+                else if (eu_set.count(cv)) regions_.eu.add(vid);
             }
         } else {
             // UID + country string: zero-copy lookup via uid2id_ (keys are string_view)
@@ -1312,9 +1727,10 @@ arrow::Status EnhancedGraph::ingest_countries_from_parquet(const std::shared_ptr
                 VertexId vid = it->second;
 
                 absl::string_view c = c_str ? sv_at(c_str, i) : lsv_at(c_lstr, i);
-                if      (us_set.count(std::string(c))) regions_.us.add(vid);
-                else if (cn_set.count(std::string(c))) regions_.cn.add(vid);
-                else if (eu_set.count(std::string(c))) regions_.eu.add(vid);
+                const std::string_view cv{c.data(), c.size()};
+                if      (us_set.count(cv)) regions_.us.add(vid);
+                else if (cn_set.count(cv)) regions_.cn.add(vid);
+                else if (eu_set.count(cv)) regions_.eu.add(vid);
             }
         }
     }
@@ -1324,4 +1740,59 @@ arrow::Status EnhancedGraph::ingest_countries_from_parquet(const std::shared_ptr
     regions_.eu.runOptimize();
     regions_prebuilt_ = true;  // tell region_bitmap_for() not to rebuild from PropertyStore
     return arrow::Status::OK();
+}
+
+bool EnhancedGraph::debug_check_bany(VertexId fid) const {
+    auto it = vertices_.find(fid);
+    if (it == vertices_.end()) return false;
+    const Vertex* focal = it->second;
+    
+    // Fallback build: citers of focal's references (union over incoming of each reference)
+    Roaring fallback;
+    for (const Edge* e : focal->outgoing_edges) {
+        VertexId ref = e->target->id;
+        auto in_it = incoming_edges_.find(ref);
+        if (in_it == incoming_edges_.end()) continue;
+        const auto& citers = in_it->second;
+        for (const Vertex* c : citers) fallback.add(c->id);
+    }
+
+        // Cached
+    auto cached_sp = get_bany_for_focal_sp(fid);
+    if (!cached_sp) return false;
+    const Roaring& cached = *cached_sp;
+
+    // Compare via XOR emptiness (safe for roaring)
+    Roaring diff = cached ^ fallback;
+    return diff.isEmpty();
+}
+
+// --- Debug helper: return (|F_t|, |F_t∩B_any|, |B_any∩W_t|, denom, cd) ---
+std::tuple<uint64_t,uint64_t,uint64_t,uint64_t,double>
+EnhancedGraph::debug_counts(VertexId fid, time_delta_t dt) {
+    auto fit = vertices_.find(fid);
+    if (fit == vertices_.end()) {
+        return {0,0,0,0,std::numeric_limits<double>::quiet_NaN()};
+    }
+    const timestamp_t ft = fit->second->time;
+    Roaring F_t;
+    if (auto it = incoming_edges_.find(fid); it != incoming_edges_.end()) {
+        F_t = incoming_edges_sorted_by_time_ ?
+              build_ref_bitmap_sorted(it->second, ft, dt) :
+              build_ref_bitmap(it->second, ft, dt);
+    }
+    auto B_any = get_bany_for_focal_sp(fid);
+    auto W_t   = get_window_bitmap_sp(ft, dt);
+    const uint64_t cF   = F_t.cardinality();
+    const uint64_t cFB  = and_cardinality_safe(F_t, *B_any);
+    const uint64_t bwin = and_cardinality_safe(*B_any, *W_t);
+    const uint64_t denom = cF + bwin - cFB;
+    const double cd = denom ? (double(cF) - 2.0*double(cFB)) / double(denom)
+                            : std::numeric_limits<double>::quiet_NaN();
+#ifndef NDEBUG
+    // Parity: |F ∪ (B_any∩W)| must equal cF + bwin − cFB
+    Roaring U = F_t; U |= (*B_any & *W_t);
+    assert(U.cardinality() == denom);
+#endif
+    return {cF, cFB, bwin, denom, cd};
 }

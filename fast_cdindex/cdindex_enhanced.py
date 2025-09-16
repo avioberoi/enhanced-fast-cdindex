@@ -1,7 +1,8 @@
 import pyarrow as pa
 import pyarrow.parquet as pq
 import os
-import _cdindex
+from typing import Optional
+from . import _cdindex
 
 # Re-export CiterFilter enum and base Graph for convenience
 CiterFilter = _cdindex.CiterFilter
@@ -11,6 +12,9 @@ class EnhancedGraph:
     def __init__(self):
         self._graph = _cdindex.EnhancedGraph()
 
+    def abi_cookie(self):
+        return _cdindex.abi_cookie()
+    
     @property
     def properties(self):
         """PropertyStore for building/using bitmaps (year, country, etc.)"""
@@ -39,6 +43,12 @@ class EnhancedGraph:
             Filtered CD index value
         """
         return self._graph.cdindex_filtered(paper_id, years, filter_type)
+
+    def cdindex_all(self, paper_id: int, years: int):
+        """
+        Compute base CD and 6 regional variants in a single pass.
+        """
+        return self._graph.cdindex_all(paper_id, years)
 
     def add_vertices_from_arrow(self, arrow_table: pa.Table):
         self._graph.add_vertices_from_arrow(arrow_table)
@@ -142,6 +152,31 @@ class EnhancedGraph:
         """Clear the predecessor bitmap cache."""
         self._graph.clear_predecessor_cache()
     
+    def verify_incoming_integrity(self, samples: int = 1000) -> bool:
+        """
+        Verify incoming edges pointer integrity for debugging.
+        
+        Args:
+            samples: Number of edge pointers to check (default 1000)
+            
+        Returns:
+            True if all checked pointers are valid, False if corruption detected
+        """
+        return self._graph.verify_incoming_integrity(samples)
+    
+    def verify_regions_against_years(self, ft: int, dt: int) -> bool:
+        """
+        Verify region bitmaps work correctly with time windows.
+        
+        Args:
+            ft: Focal time (publication year)
+            dt: Time delta (years)
+            
+        Returns:
+            True if region intersections work, False if corruption detected
+        """
+        return self._graph.verify_regions_against_years(ft, dt)
+    
     def prepare_for_searching(self):
         """Prepare graph for efficient searching by sorting edges."""
         self._graph.prepare_for_searching()
@@ -160,6 +195,9 @@ class EnhancedGraph:
     #     Note: Names must match normalized lowercase strings in parquet
     #     """
     #     self._graph.build_region_bitmaps(us_names, cn_names, eu_names)
+
+    def clear_uid_map(self):
+        self._graph.clear_uid_map()
     
     def set_country_lists(self, us_names: list, cn_names: list, eu_names: list):
         """Register normalized country-name lists that define US/CN/EU."""
@@ -182,12 +220,15 @@ class EnhancedGraph:
     def load_year_bitmaps(self, dir_path: str):
         self._graph.load_year_bitmaps(dir_path)
 
-    def ingest_countries_from_parquet(self, table: pa.Table, uid_col: str = "UID", country_col: str = "country"):
-        """
-        Ingest normalized country strings and build 'country' bitmaps directly.
-        """
-        self._graph.ingest_countries_from_parquet(table, uid_col, country_col)
+    def get_citers(self, paper_id: int, years: int) -> list:
+        return self._graph.get_citers(paper_id, years)
     
+    def set_flip_edge_direction_on_ingest(self, flip: bool):
+        self._graph.set_flip_edge_direction_on_ingest(bool(flip))
+
+    def check_bany_cache(self, paper_id: int) -> bool:
+        """Return True if cached B_any matches fallback rebuild for paper_id."""
+        return bool(self._graph.debug_check_bany(int(paper_id)))
     # Micro-benchmarking interface
     def reset_benchmark(self):
         """Reset micro-benchmark counters."""
@@ -213,15 +254,16 @@ class EnhancedGraph:
             'hu_hit_rate': bench.hu_hit / bench.hu_all if bench.hu_all > 0 else 0,
         }
 
-    # def debug_get_citers(self, paper_id: int, years: int) -> list:
-    #     return self._graph.debug_get_citers(paper_id, years)
+    def debug_counts(self, paper_id: int, years: int):
+        return self._graph.debug_counts(paper_id, years)
+    
+    def bany_cardinality(self, paper_id: int):
+        return self._graph.bany_cardinality(paper_id)
+    
+    def region_sizes(self):
+        return self._graph.region_sizes()
 
-    # def debug_get_references(self, paper_id: int) -> list:
-    #     return self._graph.debug_get_references(paper_id)
-
-
-    from typing import Optional
-
+    @staticmethod
     def read_graph_from_tsv_cache(tsv_cache_dir: str,
                                   load_properties: bool = True,
                                   limit_edges: Optional[int] = None):
