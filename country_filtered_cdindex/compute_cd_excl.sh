@@ -9,11 +9,13 @@
 #SBATCH --mem=180GB
 #SBATCH --time=36:00:00
 #SBATCH --array=0-4
-#SBATCH --output=/project/jevans/tip/disruption/code_wos_2023/enhanced-fast-cdindex/country_filtered_cdindex/slurm/0cd_excl_%A_%a.out
-#SBATCH --error=/project/jevans/tip/disruption/code_wos_2023/enhanced-fast-cdindex/country_filtered_cdindex/slurm/0cd_excl_%A_%a.err
+#SBATCH --output=/project/jevans/tip/disruption/code_wos_2023/enhanced-fast-cdindex/country_filtered_cdindex/slurm/00cd_excl_%A_%a.out
+#SBATCH --error=/project/jevans/tip/disruption/code_wos_2023/enhanced-fast-cdindex/country_filtered_cdindex/slurm/00cd_excl_%A_%a.err
 
-EXCLUDE_REGION="us"
-OUT_PREFIX="/project/jevans/tip/disruption/code_wos_2023/filtered_scores_invdl_cntries/${EXCLUDE_REGION}/scores_excl"
+# Configuration - MODIFY THESE VARIABLES
+EXCLUDE_REGION="eu"
+RUN_DIR="${RUN_DIR:-/project/jevans/tip/disruption/code_wos_2023/filtered_scores_invdl_cntries/${EXCLUDE_REGION}/resume_20250921_232719}"  # Set to discovery output directory
+OUT_PREFIX="${RUN_DIR}/scores_excl"
 
 PYTHON_PATH="/project/jevans/tip/disruption/code_wos_2023/cdindex-benchmark-env/bin/python"
 PROJECT_DIR="/project/jevans/tip/disruption/code_wos_2023/enhanced-fast-cdindex"
@@ -35,10 +37,6 @@ export MKL_NUM_THREADS=24
 export OMP_PROC_BIND=close
 export OMP_PLACES=cores
 export MAX_CACHE_ENTRIES=32768
-# Independent job architecture - no shared database
-unset CDINDEX_SAFE_MODE
-unset CDINDEX_ANDCARD_SAFE
-unset CDINDEX_NO_FASTUNION
 set -euo pipefail
 
 echo "== Compute cd_excl (${EXCLUDE_REGION}) =="
@@ -46,6 +44,7 @@ echo "Job: $SLURM_JOB_ID  ArrayTask: $SLURM_ARRAY_TASK_ID"
 echo "Node: $(hostname)"
 echo "Date: $(date)"
 echo "Array sharding: TOTAL_PARTS=${TOTAL_PARTS}"
+echo "Run directory: ${RUN_DIR}"
 echo "Output prefix: ${OUT_PREFIX}"
 echo
 

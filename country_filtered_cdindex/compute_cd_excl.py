@@ -6,13 +6,6 @@ from pathlib import Path
 import pyarrow as pa
 from fast_cdindex.cdindex_enhanced import EnhancedGraph, CiterFilter
 
-try:
-    import xxhash
-    HASH_AVAILABLE = True
-except ImportError:
-    import zlib
-    HASH_AVAILABLE = False
-
 US_NAMES = ['usa']
 CN_NAMES = ['peoples r china']
 EU_NAMES = ['eu']  # EU already normalized upstream
@@ -48,101 +41,29 @@ def region_to_filter(ex):
         return CiterFilter.ExcludeCN
     raise ValueError(f"Unknown exclude region: {ex}")
 
-class IndependentJobResume:
+def load_global_processed_uids(out_prefix):
     """
-    Independent job resume tracking - each array job manages its own state.
-    No shared database, no concurrency issues.
+    Load the global processed UIDs file created by the discovery phase.
+    Returns empty set if file doesn't exist.
     """
+    global_file = Path(out_prefix).parent / "global_processed_uids.pkl"
     
-    def __init__(self, out_prefix, part_id):
-        self.out_prefix = out_prefix
-        self.part_id = part_id
-        
-        # Create job-specific resume directory and file
-        self.resume_dir = Path(out_prefix).parent / f".resume_part_{part_id}"
-        self.resume_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.processed_file = self.resume_dir / "processed_uids.pkl"
-        self.progress_file = self.resume_dir / "progress.txt"
-        
-        # Load existing processed UIDs
-        self.processed_uids = self._load_processed_uids()
-        print(f"[resume] Part {part_id}: Loaded {len(self.processed_uids)} processed UIDs", flush=True)
-    
-    def _load_processed_uids(self):
-        """Load previously processed UIDs for this job."""
-        if self.processed_file.exists():
-            try:
-                with open(self.processed_file, 'rb') as f:
-                    return pickle.load(f)
-            except Exception as e:
-                print(f"[resume] Warning: Could not load processed UIDs: {e}", flush=True)
-                return set()
+    if not global_file.exists():
+        print(f"[global] No global processed file found at {global_file}")
+        print(f"[global] Starting from scratch (no UIDs to skip)")
         return set()
     
-    def _save_processed_uids(self):
-        """Save processed UIDs to disk."""
-        tmp_file = str(self.processed_file) + ".tmp"
-        try:
-            with open(tmp_file, 'wb') as f:
-                pickle.dump(self.processed_uids, f)
-            os.replace(tmp_file, self.processed_file)
-        except Exception as e:
-            print(f"[resume] Warning: Could not save processed UIDs: {e}", flush=True)
-    
-    def filter_unprocessed(self, uids_batch):
-        """Return UIDs that haven't been processed by this job."""
-        return [uid for uid in uids_batch if str(uid) not in self.processed_uids]
-    
-    def add_uids(self, uids):
-        """Mark UIDs as processed."""
-        for uid in uids:
-            self.processed_uids.add(str(uid))
-        self._save_processed_uids()
-    
-    def get_processed_count(self):
-        """Get count of processed UIDs for this job."""
-        return len(self.processed_uids)
-    
-    def save_progress(self, chunk_count, total_processed):
-        """Save progress information."""
-        try:
-            with open(self.progress_file, 'w') as f:
-                f.write(f"chunks_written: {chunk_count}\n")
-                f.write(f"uids_processed: {total_processed}\n")
-                f.write(f"last_update: {time.time()}\n")
-        except Exception as e:
-            print(f"[resume] Warning: Could not save progress: {e}", flush=True)
-    
-    def get_next_chunk_index(self):
-        """Find the next chunk index to write."""
-        pattern = f"{self.out_prefix}.part{self.part_id:04d}.chunk*.csv.gz"
-        existing_chunks = glob.glob(pattern)
+    try:
+        with open(global_file, 'rb') as f:
+            processed_uids = pickle.load(f)
         
-        if not existing_chunks:
-            return 0
+        print(f"[global] Loaded {len(processed_uids):,} processed UIDs from {global_file}")
+        return processed_uids
         
-        # Extract chunk numbers
-        chunk_nums = []
-        for path in existing_chunks:
-            try:
-                # Extract chunk number from filename
-                basename = os.path.basename(path)
-                chunk_part = basename.split('.chunk')[1].split('.csv.gz')[0]
-                chunk_nums.append(int(chunk_part))
-            except (IndexError, ValueError):
-                continue
-        
-        return max(chunk_nums) + 1 if chunk_nums else 0
-
-def stable_hash_partition(uid, total_parts):
-    """Deterministic hash partitioning for UIDs."""
-    if HASH_AVAILABLE:
-        hash_val = xxhash.xxh64(str(uid)).intdigest()
-    else:
-        hash_val = zlib.adler32(str(uid).encode())
-    
-    return hash_val % total_parts
+    except Exception as e:
+        print(f"[global] Warning: Could not load global processed UIDs: {e}")
+        print(f"[global] Starting from scratch")
+        return set()
 
 # Global termination flag
 _terminate_requested = False
@@ -171,51 +92,45 @@ def main():
     parser.add_argument("--log-every", type=int, default=500000, help="Log progress every N papers")
     parser.add_argument("--chunk-size", type=int, default=340000, help="Papers per output chunk")
     parser.add_argument("--flip-edges", action="store_true", help="Flip citation edges")
-    parser.add_argument("--num-chunks", type=int, help="Max chunks to process (for testing)")
     
     args = parser.parse_args()
     
     print(f"[config] years={args.years}  filter={region_to_filter(args.exclude_region)}  flip_edges={args.flip_edges}", flush=True)
     
-    # Initialize independent resume tracking
-    resume_tracker = IndependentJobResume(args.out_prefix, args.part_id)
+    # Load global processed UIDs from discovery phase
+    global_processed_uids = load_global_processed_uids(args.out_prefix)
     
     # Load graph
     print(f"[graph] Loading graph from {args.cache_dir}...", flush=True)
     vpath = os.path.join(args.cache_dir, "paper_years.parquet")
     epath = os.path.join(args.cache_dir, "edges.parquet")
-    
+
     # 1) Load vertices
     vt = pq.read_table(vpath, columns=['paper_id','UID','year'])
     g = EnhancedGraph()
     g.add_vertices_from_arrow(vt)
 
-    # 2) Load edges via dataset scanner (column-flexible; supports *_uid)
-    dataset = ds.dataset(epath, format="parquet")
-    cols = ['source_id','target_id','source_uid','target_uid']
-    col_list = [c for c in cols if c in dataset.schema.names]
-    scanner = dataset.scanner(columns=col_list, use_threads=True, batch_size=1<<20)
-
+    # 2) Stream edges directly (memory efficient for 1.5B edges)
     if args.flip_edges:
         g.set_flip_edge_direction_on_ingest(True)
-
-    batch_buf = []
-    B = 0
-    for i, batch in enumerate(scanner.to_batches()):
-        batch_buf.append(batch)
-        B += batch.num_rows
-        if B >= 5_000_000:
-            g.add_edges_from_arrow(pa.Table.from_batches(batch_buf))
-            batch_buf.clear(); B = 0
-    if batch_buf:
-        g.add_edges_from_arrow(pa.Table.from_batches(batch_buf))
-    del dataset, scanner, batch_buf
+    
+    dataset = ds.dataset(epath, format="parquet")
+    cols = ['source_id','target_id','source_uid','target_uid']
+    available_cols = [c for c in cols if c in dataset.schema.names]
+    scanner = dataset.scanner(columns=available_cols, batch_size=1<<20)
+    
+    for batch in scanner.to_batches():
+        # Convert RecordBatch to Table for the API
+        table = pa.Table.from_batches([batch])
+        g.add_edges_from_arrow(table)
+    
+    del dataset, scanner
 
     # 3) Prepare + year bitmaps
     g.prepare_for_searching()
     g.properties.ingest_arrow(vt)
     g.properties.build_indexes()
-    
+
     # 4) Regions: load or build
     g.set_country_lists(US_NAMES, CN_NAMES, EU_NAMES)
     loaded = False
@@ -240,125 +155,90 @@ def main():
         print(f"[regions] US={us_sz:,} EU={eu_sz:,} CN={cn_sz:,}", flush=True)
         del ct
 
-    # Get total papers from the vertex table before cleanup
+    # Get total papers and compute simple shard
     total_papers = vt.num_rows
-    print(f"[run] Total papers in dataset: {total_papers:,}", flush=True)
-    
-    # Clear UID map and release vertex table memory early
-    g.clear_uid_map()
-    del vt
-    
-    # Print shard info (legacy - actual work is hash partitioned)
     start, end = shard_slice(total_papers, args.part_id, args.total_parts)
-    print(f"[shard] global_part_id={args.part_id} total_parts={args.total_parts}  rows=[{start}:{end})  count={end-start}", flush=True)
-    print(f"[plan] Note: hash partitioning overrides legacy shard slice; start/end shown only for reference", flush=True)
     
-    # Get next chunk index for this job
-    chunk_idx = resume_tracker.get_next_chunk_index()
-    processed_count = resume_tracker.get_processed_count()
+    print(f"[shard] Part {args.part_id}/{args.total_parts}: rows [{start}:{end}) = {end-start:,} papers")
+    print(f"[global] Will skip {len(global_processed_uids):,} already-processed UIDs", flush=True)
     
-    print(f"[resume] Part {args.part_id}: Starting from chunk {chunk_idx}, {processed_count} UIDs already processed", flush=True)
+    # Extract our shard and filter efficiently
+    shard_table = vt.slice(start, end - start)
     
-    # Start streaming computation
-    print(f"[compute] Starting fully streaming computation for part {args.part_id}/{args.total_parts}...", flush=True)
-    print(f"[compute] Streaming from {vpath}...", flush=True)
+    # Process shard in smaller chunks to minimize memory usage
+    work_items = []
+    papers_skipped = 0
+    chunk_size = 100000  # Process 100k rows at a time
     
-    # Set up hash partitioning
-    hash_lib = "xxhash" if HASH_AVAILABLE else "zlib.adler32"
-    print(f"[compute] Using {hash_lib} for stable partitioning", flush=True)
+    for chunk_start in range(0, len(shard_table), chunk_size):
+        chunk_end = min(chunk_start + chunk_size, len(shard_table))
+        chunk = shard_table.slice(chunk_start, chunk_end - chunk_start)
+        
+        uids = chunk.column('UID')
+        pids = chunk.column('paper_id')
+        
+        for i in range(len(uids)):
+            uid = str(uids[i].as_py())
+            if uid in global_processed_uids:
+                papers_skipped += 1
+            else:
+                work_items.append((uid, pids[i].as_py()))
+        
+        del chunk, uids, pids  # Free chunk memory immediately
     
-    # Stream through data
-    dataset = ds.dataset(vpath, format="parquet")
-    scanner = dataset.scanner(columns=['UID', 'paper_id'], batch_size=1<<20, use_threads=True)
+    print(f"[filter] {len(work_items):,} papers to process, {papers_skipped:,} already done", flush=True)
     
+    # Clear memory
+    g.clear_uid_map()
+    del vt, shard_table
+    
+    # Process work items
     out_rows = []
-    chunks_done = 0
-    max_chunks_to_do = args.num_chunks if args.num_chunks is not None else float('inf')
+    chunk_idx = 0
+    processed_count = 0
+    total_work = len(work_items)
     
-    print(f"[compute] Part {args.part_id} starting streaming computation", flush=True)
-    
-    for batch in scanner.to_batches():
-        if _terminate_requested or chunks_done >= max_chunks_to_do:
+    for uid, pid in work_items:
+        if _terminate_requested:
             break
             
-        # Extract UIDs and paper_ids
-        uids = [str(u) for u in batch.column('UID').to_pylist()]
-        paper_ids = batch.column('paper_id').to_pylist()
-        
-        # Hash partition: only process UIDs assigned to this job
-        my_data = []
-        for uid, pid in zip(uids, paper_ids):
-            if stable_hash_partition(uid, args.total_parts) == args.part_id:
-                my_data.append((uid, pid))
-        
-        if not my_data:
+        try:
+            # Compute CD exclusion score
+            cd_score = g.cdindex_filtered(pid, args.years, region_to_filter(args.exclude_region))
+            out_rows.append((uid, cd_score))
+            processed_count += 1
+            
+            # Log progress
+            if processed_count % args.log_every == 0:
+                print(f"[progress] Part {args.part_id}: {processed_count:,}/{total_work:,} processed", flush=True)
+            
+            # Check if we should flush
+            if len(out_rows) >= args.chunk_size:
+                # Write chunk
+                write_chunk(args.out_prefix, args.part_id, chunk_idx, out_rows)
+                out_rows.clear()  # More explicit memory clearing
+                chunk_idx += 1
+
+        except Exception as e:
+            print(f"[error] Failed to process paper {pid} (UID {uid}): {e}", flush=True)
             continue
-        
-        # Filter out already processed UIDs
-        batch_uids = [uid for uid, _ in my_data]
-        unprocessed_uids = resume_tracker.filter_unprocessed(batch_uids)
-        
-        if not unprocessed_uids:
-            continue
-        
-        # Create mapping for unprocessed UIDs
-        unprocessed_set = set(unprocessed_uids)
-        unprocessed_data = [(uid, pid) for uid, pid in my_data if uid in unprocessed_set]
-        
-        # Process unprocessed UIDs
-        for uid, pid in unprocessed_data:
-            if _terminate_requested or chunks_done >= max_chunks_to_do:
-                break
-                
-            try:
-                # Compute CD exclusion score
-                cd_score = g.cdindex_filtered(pid, region_to_filter(args.exclude_region))
-                out_rows.append((uid, cd_score))
-                
-                # Check if we should flush
-                if len(out_rows) >= args.chunk_size:
-                    # Write chunk
-                    write_chunk(args.out_prefix, args.part_id, chunk_idx, out_rows)
-                    
-                    # Update resume tracking
-                    uids_written = [uid for uid, _ in out_rows]
-                    resume_tracker.add_uids(uids_written)
-                    resume_tracker.save_progress(chunk_idx + 1, resume_tracker.get_processed_count())
-                    
-                    # Reset for next chunk
-                    out_rows = []
-                    chunk_idx += 1
-                    chunks_done += 1
-                    
-                    if chunks_done >= max_chunks_to_do:
-                        print(f"[limit] Reached max chunks limit ({args.num_chunks}), stopping", flush=True)
-                        break
-                        
-            except Exception as e:
-                print(f"[error] Failed to process paper {pid} (UID {uid}): {e}", flush=True)
-                continue
+    
+    # Clear work_items from memory
+    del work_items
     
     # Final flush
     if out_rows and not _terminate_requested:
         print(f"[final] Writing final chunk with {len(out_rows)} papers...", flush=True)
         write_chunk(args.out_prefix, args.part_id, chunk_idx, out_rows)
-        
-        uids_written = [uid for uid, _ in out_rows]
-        resume_tracker.add_uids(uids_written)
-        resume_tracker.save_progress(chunk_idx + 1, resume_tracker.get_processed_count())
-        chunks_done += 1
+        chunk_idx += 1
     
     # Handle graceful shutdown
     if _terminate_requested and out_rows:
         print(f"[sigterm] Writing partial chunk with {len(out_rows)} papers before shutdown...", flush=True)
         write_chunk(args.out_prefix, args.part_id, chunk_idx, out_rows)
-        
-        uids_written = [uid for uid, _ in out_rows]
-        resume_tracker.add_uids(uids_written)
-        resume_tracker.save_progress(chunk_idx + 1, resume_tracker.get_processed_count())
     
-    final_processed = resume_tracker.get_processed_count()
-    print(f"[complete] Part {args.part_id}: Processed {final_processed} total UIDs, wrote {chunks_done} chunks", flush=True)
+    total_chunks = chunk_idx + (1 if out_rows and not _terminate_requested else 0)
+    print(f"[complete] Part {args.part_id}: {total_work:,} papers assigned, {papers_skipped:,} skipped, {total_chunks} chunks written", flush=True)
     
     if _terminate_requested:
         print(f"[sigterm] Part {args.part_id}: Graceful shutdown completed", flush=True)
